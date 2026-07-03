@@ -22,4 +22,5 @@ include(
     ":core-storage",
     ":game-shikaku",
     ":game-sudoku",
+    ":game-variety",
 )

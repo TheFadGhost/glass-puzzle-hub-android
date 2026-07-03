@@ -12,8 +12,8 @@ android {
         applicationId = "com.thefadghost.glasspuzzlehub"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.0.0"
+        versionCode = 4
+        versionName = "2.1.0"
     }
 
     buildFeatures {
@@ -40,6 +40,7 @@ dependencies {
     implementation(project(":core-storage"))
     implementation(project(":game-shikaku"))
     implementation(project(":game-sudoku"))
+    implementation(project(":game-variety"))
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.compose.animation:animation")

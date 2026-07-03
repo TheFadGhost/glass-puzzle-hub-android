@@ -1,11 +1,14 @@
 # Glass Puzzle Hub
 
-Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a glass floating dock, and canvas-rendered puzzle boards. V2 includes Shikaku and Sudoku, with shared contracts and visible roadmap cards for more puzzle games later.
+Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a glass floating dock, smart persisted sessions, and canvas-rendered puzzle boards. V2.1 includes Shikaku, Sudoku, Slitherlink, Nurikabe, and Kakuro.
 
-## V1 Games
+## Games
 
 - Shikaku: partition the board into rectangles where each rectangle contains exactly one clue and its area matches that clue.
 - Sudoku: fill a 9x9 grid with digits 1 through 9 so every row, column, and 3x3 box contains each digit once.
+- Slitherlink: toggle edges to draw one continuous loop around numbered cells.
+- Nurikabe: shade wall cells while keeping numbered islands unshaded.
+- Kakuro: fill white cells so across and down sum clues match.
 
 ## Design Direction
 
@@ -15,9 +18,11 @@ Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a gl
 - Floating glass dock, rounded vector icons, custom theme tokens, custom boards, and custom settings toggles.
 - Solid squircle panels for cards, settings, popups, and game surfaces so the glass effect stays restrained.
 - High-refresh display preference for devices that expose 90Hz/120Hz modes.
+- Smart timer pauses when the app leaves foreground and resumes from saved elapsed time.
+- Continue sessions persist unfinished maps through app close and force stop.
 - Shikaku modes: Classic, Mini, Wide, Tall, Large, and Shadow Blocks.
 - Sudoku modes: Classic playable, with Mini, Diagonal, Irregular, and Killer staged as planned engines.
-- Next-game roadmap cards for Slitherlink, Nurikabe, and Kakuro.
+- Playable compact engines for Slitherlink, Nurikabe, and Kakuro.
 - Six themes: Noir Glass, Frost Glass, Aurora Glass, Ember Glass, Mono Ink, and Solar Clean.
 
 ## Architecture
@@ -28,6 +33,7 @@ Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a gl
 - `core-storage`: Room entities/DAO and DataStore settings.
 - `game-shikaku`: Shikaku model, validator, solver, generator.
 - `game-sudoku`: Sudoku model, validator, solver, generator.
+- `game-variety`: Slitherlink, Nurikabe, and Kakuro compact engines.
 
 ## Local Build
 
@@ -45,10 +51,10 @@ The debug APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Current V1 Limits
+## Current Limits
 
-- Saves and stats storage schema exists; only theme/settings persistence is wired in the first UI pass.
+- Continue sessions are wired for active puzzle state and elapsed time; full archive/history browsing is still basic.
 - Shikaku has a completion popup when the board validates cleanly; Sudoku completion currently reports through the play message.
-- Slitherlink, Nurikabe, and Kakuro are roadmap cards in v2, not playable engines yet.
+- Slitherlink, Nurikabe, and Kakuro are compact first playable engines, not full production-grade generators yet.
 - No Play Store signing or cloud sync.
 - Daily puzzles are generated locally from date-based seeds.

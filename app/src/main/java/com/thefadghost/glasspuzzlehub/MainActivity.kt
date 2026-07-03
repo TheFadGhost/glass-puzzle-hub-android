@@ -46,8 +46,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +66,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -78,11 +82,16 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thefadghost.glasspuzzlehub.model.Difficulty
 import com.thefadghost.glasspuzzlehub.model.DisplayModeCandidate
 import com.thefadghost.glasspuzzlehub.model.GameId
 import com.thefadghost.glasspuzzlehub.model.HighRefreshSelector
+import com.thefadghost.glasspuzzlehub.model.SessionTimerFormatter
+import com.thefadghost.glasspuzzlehub.model.SessionTimerState
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuCell
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuCompletion
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuGenerator
@@ -96,6 +105,8 @@ import com.thefadghost.glasspuzzlehub.sudoku.SudokuGrid
 import com.thefadghost.glasspuzzlehub.sudoku.SudokuPuzzle
 import com.thefadghost.glasspuzzlehub.sudoku.SudokuValidator
 import com.thefadghost.glasspuzzlehub.storage.HubSettings
+import com.thefadghost.glasspuzzlehub.storage.GameSessionEntity
+import com.thefadghost.glasspuzzlehub.storage.SessionRepository
 import com.thefadghost.glasspuzzlehub.storage.SettingsStore
 import com.thefadghost.glasspuzzlehub.ui.FloatingDock
 import com.thefadghost.glasspuzzlehub.ui.GlassBackground
@@ -105,10 +116,34 @@ import com.thefadghost.glasspuzzlehub.ui.GlassPanel
 import com.thefadghost.glasspuzzlehub.ui.GlassText
 import com.thefadghost.glasspuzzlehub.ui.GlassTheme
 import com.thefadghost.glasspuzzlehub.ui.GlassThemes
+import com.thefadghost.glasspuzzlehub.variety.EdgeOrientation
+import com.thefadghost.glasspuzzlehub.variety.KakuroGenerator
+import com.thefadghost.glasspuzzlehub.variety.KakuroInteractions
+import com.thefadghost.glasspuzzlehub.variety.KakuroPuzzle
+import com.thefadghost.glasspuzzlehub.variety.KakuroState
+import com.thefadghost.glasspuzzlehub.variety.KakuroValidator
+import com.thefadghost.glasspuzzlehub.variety.LoopEdge
+import com.thefadghost.glasspuzzlehub.variety.NurikabeGenerator
+import com.thefadghost.glasspuzzlehub.variety.NurikabeInteractions
+import com.thefadghost.glasspuzzlehub.variety.NurikabePuzzle
+import com.thefadghost.glasspuzzlehub.variety.NurikabeState
+import com.thefadghost.glasspuzzlehub.variety.NurikabeValidator
+import com.thefadghost.glasspuzzlehub.variety.PuzzleCell
+import com.thefadghost.glasspuzzlehub.variety.SlitherlinkGenerator
+import com.thefadghost.glasspuzzlehub.variety.SlitherlinkInteractions
+import com.thefadghost.glasspuzzlehub.variety.SlitherlinkPuzzle
+import com.thefadghost.glasspuzzlehub.variety.SlitherlinkState
+import com.thefadghost.glasspuzzlehub.variety.SlitherlinkValidator
 import java.time.LocalDate
 import kotlin.math.floor
+import kotlin.math.abs
 import kotlin.math.min
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -160,9 +195,18 @@ private enum class SudokuMode(val label: String, val summary: String, val playab
 private fun GlassPuzzleHubApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
     val settingsStore = remember { SettingsStore(context.applicationContext) }
+    val sessionRepository = remember { SessionRepository.get(context.applicationContext) }
+    val activeSessions by sessionRepository.activeSessions.collectAsStateWithLifecycle(initialValue = emptyList())
     val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = HubSettings())
     val theme = GlassThemes.all.firstOrNull { it.id == settings.themeId } ?: GlassThemes.Solar
+    val json = remember {
+        Json {
+            ignoreUnknownKeys = true
+            allowStructuredMapKeys = true
+        }
+    }
     var screen by remember { mutableStateOf(Screen.Games) }
     var activeGame by remember { mutableStateOf(GameId.Shikaku) }
     var difficulty by remember { mutableStateOf(Difficulty.Easy) }
@@ -174,23 +218,226 @@ private fun GlassPuzzleHubApp() {
     var sudokuGrid by remember { mutableStateOf(sudokuPuzzle.givens) }
     var sudokuSelected by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var sudokuNotes by remember { mutableStateOf(false) }
+    var slitherlinkPuzzle by remember { mutableStateOf(sampleSlitherlinkPuzzle()) }
+    var slitherlinkState by remember { mutableStateOf(SlitherlinkState()) }
+    var nurikabePuzzle by remember { mutableStateOf(sampleNurikabePuzzle()) }
+    var nurikabeState by remember { mutableStateOf(NurikabeState()) }
+    var kakuroPuzzle by remember { mutableStateOf(sampleKakuroPuzzle()) }
+    var kakuroState by remember { mutableStateOf(KakuroState()) }
+    var kakuroSelected by remember { mutableStateOf<PuzzleCell?>(null) }
+    var timerState by remember { mutableStateOf(SessionTimerState()) }
+    var activeSession by remember { mutableStateOf<GameSessionEntity?>(null) }
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var appForeground by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf("Pick a puzzle and start clean.") }
+
+    fun currentPayload(): String =
+        when (activeGame) {
+            GameId.Shikaku -> json.encodeToString(ShikakuSavePayload(shikakuPuzzle, shikakuRects.toList(), shikakuMode))
+            GameId.Sudoku -> json.encodeToString(
+                SudokuSavePayload(
+                    puzzle = sudokuPuzzle,
+                    grid = sudokuGrid,
+                    selectedRow = sudokuSelected?.first,
+                    selectedCol = sudokuSelected?.second,
+                    notes = sudokuNotes,
+                    mode = sudokuMode.name,
+                ),
+            )
+            GameId.Slitherlink -> json.encodeToString(SlitherlinkSavePayload(slitherlinkPuzzle, slitherlinkState))
+            GameId.Nurikabe -> json.encodeToString(NurikabeSavePayload(nurikabePuzzle, nurikabeState))
+            GameId.Kakuro -> json.encodeToString(KakuroSavePayload(kakuroPuzzle, kakuroState, kakuroSelected))
+        }
+
+    fun persistSession(
+        payload: String = currentPayload(),
+        moveDelta: Int = 0,
+        completed: Boolean = false,
+        elapsedOverride: Long? = null,
+    ) {
+        val session = activeSession ?: return
+        if (session.completedAt != null) return
+        val timestamp = System.currentTimeMillis()
+        val elapsed = elapsedOverride ?: timerState.elapsedAt(timestamp)
+        val next = session.copy(
+            statePayload = payload,
+            elapsedMs = elapsed,
+            moveCount = session.moveCount + moveDelta,
+            completedAt = if (completed) timestamp else null,
+        )
+        activeSession = next
+        if (completed) timerState = timerState.pause(timestamp)
+        scope.launch { sessionRepository.upsertSession(next) }
+    }
+
+    fun sessionFor(game: GameId): GameSessionEntity? =
+        activeSessions.firstOrNull { it.gameId == game.value }
+
+    fun loadSession(session: GameSessionEntity) {
+        val game = GameId.values().firstOrNull { it.value == session.gameId } ?: return
+        try {
+            activeGame = game
+            when (game) {
+                GameId.Shikaku -> {
+                    val payload = json.decodeFromString<ShikakuSavePayload>(session.statePayload)
+                    shikakuPuzzle = payload.puzzle
+                    shikakuRects.clear()
+                    shikakuRects.addAll(payload.rects)
+                    shikakuMode = payload.mode
+                    difficulty = payload.puzzle.difficulty
+                }
+                GameId.Sudoku -> {
+                    val payload = json.decodeFromString<SudokuSavePayload>(session.statePayload)
+                    sudokuPuzzle = payload.puzzle
+                    sudokuGrid = payload.grid
+                    sudokuSelected = if (payload.selectedRow != null && payload.selectedCol != null) payload.selectedRow to payload.selectedCol else null
+                    sudokuNotes = payload.notes
+                    sudokuMode = SudokuMode.valueOf(payload.mode)
+                    difficulty = payload.puzzle.difficulty
+                }
+                GameId.Slitherlink -> {
+                    val payload = json.decodeFromString<SlitherlinkSavePayload>(session.statePayload)
+                    slitherlinkPuzzle = payload.puzzle
+                    slitherlinkState = payload.state
+                    difficulty = payload.puzzle.difficulty
+                }
+                GameId.Nurikabe -> {
+                    val payload = json.decodeFromString<NurikabeSavePayload>(session.statePayload)
+                    nurikabePuzzle = payload.puzzle
+                    nurikabeState = payload.state
+                    difficulty = payload.puzzle.difficulty
+                }
+                GameId.Kakuro -> {
+                    val payload = json.decodeFromString<KakuroSavePayload>(session.statePayload)
+                    kakuroPuzzle = payload.puzzle
+                    kakuroState = payload.state
+                    kakuroSelected = payload.selected
+                    difficulty = payload.puzzle.difficulty
+                }
+            }
+            activeSession = session
+            timerState = SessionTimerState(session.elapsedMs).resume(System.currentTimeMillis())
+            nowMs = System.currentTimeMillis()
+            message = "Continued ${game.displayName} at ${SessionTimerFormatter.format(session.elapsedMs)}."
+            screen = Screen.Play
+        } catch (error: IllegalArgumentException) {
+            message = "That saved session could not be restored. Start a fresh puzzle."
+        }
+    }
 
     fun startGame(game: GameId, nextDifficulty: Difficulty = difficulty, daily: Boolean = false) {
         activeGame = game
         difficulty = nextDifficulty
         val seedBase = if (daily) LocalDate.now().toEpochDay() else System.currentTimeMillis() / 1000L
-        if (game == GameId.Shikaku) {
-            shikakuPuzzle = ShikakuGenerator.generate(seedBase + nextDifficulty.ordinal * 41 + shikakuMode.ordinal * 131, nextDifficulty, shikakuMode)
-            shikakuRects.clear()
-        } else {
-            sudokuPuzzle = SudokuGenerator.generate(seedBase + nextDifficulty.ordinal * 71 + sudokuMode.ordinal * 151, nextDifficulty)
-            sudokuGrid = sudokuPuzzle.givens
-            sudokuSelected = null
+        val payload: String
+        val puzzleId: String
+        when (game) {
+            GameId.Shikaku -> {
+                val puzzle = ShikakuGenerator.generate(seedBase + nextDifficulty.ordinal * 41 + shikakuMode.ordinal * 131, nextDifficulty, shikakuMode)
+                shikakuPuzzle = puzzle
+                shikakuRects.clear()
+                payload = json.encodeToString(ShikakuSavePayload(puzzle, emptyList(), shikakuMode))
+                puzzleId = puzzle.puzzleId
+            }
+            GameId.Sudoku -> {
+                val puzzle = SudokuGenerator.generate(seedBase + nextDifficulty.ordinal * 71 + sudokuMode.ordinal * 151, nextDifficulty)
+                sudokuPuzzle = puzzle
+                sudokuGrid = puzzle.givens
+                sudokuSelected = null
+                sudokuNotes = false
+                payload = json.encodeToString(SudokuSavePayload(puzzle, puzzle.givens, null, null, false, sudokuMode.name))
+                puzzleId = puzzle.puzzleId
+            }
+            GameId.Slitherlink -> {
+                val puzzle = SlitherlinkGenerator.generate(seedBase + nextDifficulty.ordinal * 31, nextDifficulty)
+                slitherlinkPuzzle = puzzle
+                slitherlinkState = SlitherlinkState()
+                payload = json.encodeToString(SlitherlinkSavePayload(puzzle, slitherlinkState))
+                puzzleId = puzzle.puzzleId
+            }
+            GameId.Nurikabe -> {
+                val puzzle = NurikabeGenerator.generate(seedBase + nextDifficulty.ordinal * 37, nextDifficulty)
+                nurikabePuzzle = puzzle
+                nurikabeState = NurikabeState()
+                payload = json.encodeToString(NurikabeSavePayload(puzzle, nurikabeState))
+                puzzleId = puzzle.puzzleId
+            }
+            GameId.Kakuro -> {
+                val puzzle = KakuroGenerator.generate(seedBase + nextDifficulty.ordinal * 43, nextDifficulty)
+                kakuroPuzzle = puzzle
+                kakuroState = KakuroState()
+                kakuroSelected = null
+                payload = json.encodeToString(KakuroSavePayload(puzzle, kakuroState, kakuroSelected))
+                puzzleId = puzzle.puzzleId
+            }
         }
-        val modeLabel = if (game == GameId.Shikaku) shikakuMode.label else sudokuMode.label
+        val timestamp = System.currentTimeMillis()
+        val session = GameSessionEntity(
+            sessionId = "${game.value}-$puzzleId-$timestamp",
+            gameId = game.value,
+            puzzleId = puzzleId,
+            statePayload = payload,
+            elapsedMs = 0L,
+            moveCount = 0,
+            hintsUsed = 0,
+            mistakes = 0,
+            startedAt = timestamp,
+            completedAt = null,
+        )
+        activeSession = session
+        timerState = SessionTimerState().resume(timestamp)
+        nowMs = timestamp
+        scope.launch { sessionRepository.upsertSession(session) }
+        val modeLabel = when (game) {
+            GameId.Shikaku -> shikakuMode.label
+            GameId.Sudoku -> sudokuMode.label
+            else -> "Classic"
+        }
         message = if (daily) "Daily ${game.displayName} / $modeLabel is ready." else "${game.displayName} ${nextDifficulty.label} / $modeLabel started."
         screen = Screen.Play
+    }
+
+    fun continueGame(game: GameId) {
+        scope.launch {
+            val session = sessionRepository.latestActiveSessionForGame(game.value)
+            if (session != null) {
+                loadSession(session)
+            } else {
+                startGame(game)
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> appForeground = true
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> appForeground = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(screen, appForeground, activeSession?.sessionId) {
+        val timestamp = System.currentTimeMillis()
+        val shouldRun = screen == Screen.Play && appForeground && activeSession?.completedAt == null
+        timerState = if (shouldRun) timerState.resume(timestamp) else timerState.pause(timestamp)
+        if (!shouldRun) persistSession(elapsedOverride = timerState.elapsedAt(timestamp))
+    }
+
+    LaunchedEffect(screen, appForeground, activeSession?.sessionId) {
+        while (screen == Screen.Play && appForeground && activeSession?.completedAt == null) {
+            nowMs = System.currentTimeMillis()
+            delay(1000L)
+        }
+    }
+
+    LaunchedEffect(nowMs, screen, activeSession?.sessionId) {
+        if (screen == Screen.Play && activeSession?.completedAt == null) {
+            persistSession(elapsedOverride = timerState.elapsedAt(nowMs))
+        }
     }
 
     GlassBackground(theme) {
@@ -225,33 +472,99 @@ private fun GlassPuzzleHubApp() {
                         difficulty = difficulty,
                         shikakuMode = shikakuMode,
                         sudokuMode = sudokuMode,
+                        continueSession = sessionFor(activeGame),
                         onDifficulty = { difficulty = it },
                         onShikakuMode = { shikakuMode = it },
                         onSudokuMode = { sudokuMode = it },
                         onBack = { screen = Screen.Games },
                         onStart = { startGame(activeGame, difficulty) },
                         onDaily = { startGame(activeGame, difficulty, daily = true) },
+                        onContinue = { continueGame(activeGame) },
                     )
                     Screen.Play -> GamePlayScreen(
                         theme = theme,
                         game = activeGame,
                         difficulty = difficulty,
                         message = message,
+                        timerText = SessionTimerFormatter.format(timerState.elapsedAt(nowMs)),
                         shikakuPuzzle = shikakuPuzzle,
                         shikakuRects = shikakuRects,
                         sudokuPuzzle = sudokuPuzzle,
                         sudokuGrid = sudokuGrid,
                         sudokuSelected = sudokuSelected,
                         sudokuNotes = sudokuNotes,
+                        slitherlinkPuzzle = slitherlinkPuzzle,
+                        slitherlinkState = slitherlinkState,
+                        nurikabePuzzle = nurikabePuzzle,
+                        nurikabeState = nurikabeState,
+                        kakuroPuzzle = kakuroPuzzle,
+                        kakuroState = kakuroState,
+                        kakuroSelected = kakuroSelected,
                         onBack = { screen = Screen.Detail },
                         onMessage = { message = it },
                         onShikakuRects = {
                             shikakuRects.clear()
                             shikakuRects.addAll(it)
+                            persistSession(
+                                payload = json.encodeToString(ShikakuSavePayload(shikakuPuzzle, it, shikakuMode)),
+                                moveDelta = 1,
+                                completed = ShikakuCompletion.isComplete(shikakuPuzzle, it),
+                            )
                         },
-                        onSudokuGrid = { sudokuGrid = it },
-                        onSudokuSelected = { sudokuSelected = it },
-                        onSudokuNotes = { sudokuNotes = it },
+                        onSudokuGrid = {
+                            sudokuGrid = it
+                            persistSession(
+                                payload = json.encodeToString(
+                                    SudokuSavePayload(sudokuPuzzle, it, sudokuSelected?.first, sudokuSelected?.second, sudokuNotes, sudokuMode.name),
+                                ),
+                                moveDelta = 1,
+                                completed = SudokuValidator.isSolved(it),
+                            )
+                        },
+                        onSudokuSelected = {
+                            sudokuSelected = it
+                            persistSession(
+                                payload = json.encodeToString(
+                                    SudokuSavePayload(sudokuPuzzle, sudokuGrid, it?.first, it?.second, sudokuNotes, sudokuMode.name),
+                                ),
+                            )
+                        },
+                        onSudokuNotes = {
+                            sudokuNotes = it
+                            persistSession(
+                                payload = json.encodeToString(
+                                    SudokuSavePayload(sudokuPuzzle, sudokuGrid, sudokuSelected?.first, sudokuSelected?.second, it, sudokuMode.name),
+                                ),
+                            )
+                        },
+                        onSlitherlinkState = {
+                            slitherlinkState = it
+                            persistSession(
+                                payload = json.encodeToString(SlitherlinkSavePayload(slitherlinkPuzzle, it)),
+                                moveDelta = 1,
+                                completed = SlitherlinkValidator.isSolved(slitherlinkPuzzle, it),
+                            )
+                        },
+                        onNurikabeState = {
+                            nurikabeState = it
+                            persistSession(
+                                payload = json.encodeToString(NurikabeSavePayload(nurikabePuzzle, it)),
+                                moveDelta = 1,
+                                completed = NurikabeValidator.isSolved(nurikabePuzzle, it),
+                            )
+                        },
+                        onKakuroState = {
+                            kakuroState = it
+                            persistSession(
+                                payload = json.encodeToString(KakuroSavePayload(kakuroPuzzle, it, kakuroSelected)),
+                                moveDelta = 1,
+                                completed = KakuroValidator.isSolved(kakuroPuzzle, it),
+                            )
+                        },
+                        onKakuroSelected = {
+                            kakuroSelected = it
+                            persistSession(payload = json.encodeToString(KakuroSavePayload(kakuroPuzzle, kakuroState, it)))
+                        },
                     )
                 }
             }
@@ -261,8 +574,7 @@ private fun GlassPuzzleHubApp() {
                     theme = theme,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 20.dp, vertical = 14.dp)
-                        .fillMaxWidth(),
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                 ) {
                     DockButton("Games", GlassIcon.Grid, screen == Screen.Games, theme) { screen = Screen.Games }
                     DockButton("Daily", GlassIcon.Calendar, screen == Screen.Daily, theme) { screen = Screen.Daily }
@@ -282,7 +594,7 @@ private fun DockButton(label: String, icon: GlassIcon, selected: Boolean, theme:
 @Composable
 private fun HomeScreen(theme: GlassTheme, message: String, onOpenGame: (GameId) -> Unit, onStart: (GameId) -> Unit) {
     ScreenColumn {
-        Header(theme, "Glass Puzzle Hub", "Two logic games, one custom glass playground.")
+        Header(theme, "Glass Puzzle Hub", "Five logic games, with Shikaku and Sudoku kept as the main front options.")
         GlassPanel(theme, Modifier.fillMaxWidth()) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 GlassText("Continue", theme, size = 15, weight = FontWeight.SemiBold, muted = true)
@@ -316,7 +628,7 @@ private fun GamesScreen(
     onSettings: () -> Unit,
 ) {
     ScreenColumn {
-        Header(theme, "Games", "Pick one of the two logic puzzles, then tune difficulty and themes.")
+        Header(theme, "Games", "Pick a main puzzle or jump into one of the extra logic games.")
         PrimaryGameOption(
             theme = theme,
             game = GameId.Shikaku,
@@ -337,10 +649,10 @@ private fun GamesScreen(
             ExtraShortcut(theme, "Themes", "Color sets", GlassIcon.Palette, Modifier.weight(1f), onThemes)
         }
         ExtraShortcut(theme, "Settings", "Motion, haptics, contrast, sound", GlassIcon.Settings, Modifier.fillMaxWidth(), onSettings)
-        GlassText("Next games", theme, size = 14, weight = FontWeight.SemiBold, muted = true)
-        RecommendedGameCard(theme, "Slitherlink", "Draw one continuous loop around numbered cells.", "Modes planned: classic, no-3, large loops")
-        RecommendedGameCard(theme, "Nurikabe", "Shade a connected wall while preserving numbered islands.", "Modes planned: classic, tiny islands, expert wall")
-        RecommendedGameCard(theme, "Kakuro", "Fill sum runs with digits 1-9 without repeats.", "Modes planned: mini sums, classic, large grids")
+        GlassText("More playable games", theme, size = 14, weight = FontWeight.SemiBold, muted = true)
+        RecommendedGameCard(theme, GameId.Slitherlink, "Draw one continuous loop around numbered cells.", "Tap edges to toggle the loop.", onOpen, onStart)
+        RecommendedGameCard(theme, GameId.Nurikabe, "Shade a connected wall while preserving numbered islands.", "Tap cells to toggle wall shading.", onOpen, onStart)
+        RecommendedGameCard(theme, GameId.Kakuro, "Fill sum runs with digits 1-9 without repeats.", "Tap white cells, then use the digit dock.", onOpen, onStart)
         Spacer(Modifier.height(92.dp))
     }
 }
@@ -349,7 +661,7 @@ private fun GamesScreen(
 private fun DailyScreen(theme: GlassTheme, onStart: (GameId, Difficulty) -> Unit) {
     ScreenColumn {
         Header(theme, "Daily", LocalDate.now().toString())
-        val games: List<GameId> = listOf(GameId.Shikaku, GameId.Sudoku)
+        val games: List<GameId> = GameId.values().toList()
         games.forEach { game: GameId ->
             GlassPanel(theme, Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -376,17 +688,19 @@ private fun GameDetailScreen(
     difficulty: Difficulty,
     shikakuMode: ShikakuMode,
     sudokuMode: SudokuMode,
+    continueSession: GameSessionEntity?,
     onDifficulty: (Difficulty) -> Unit,
     onShikakuMode: (ShikakuMode) -> Unit,
     onSudokuMode: (SudokuMode) -> Unit,
     onBack: () -> Unit,
     onStart: () -> Unit,
     onDaily: () -> Unit,
+    onContinue: () -> Unit,
 ) {
     ScreenColumn {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             GlassIconButton("Back", theme, GlassIcon.Back, onClick = onBack)
-            Header(theme, game.displayName, if (game == GameId.Shikaku) "Divide the board into exact clue rectangles." else "Fill every row, column, and box with 1 through 9.")
+            Header(theme, game.displayName, gameDetailSummary(game))
         }
         PreviewBoard(theme, game, Modifier.fillMaxWidth().height(170.dp))
         GlassPanel(theme, Modifier.fillMaxWidth()) {
@@ -399,37 +713,42 @@ private fun GameDetailScreen(
                         ActionChip(item.label, theme, selected = item == difficulty) { onDifficulty(item) }
                     }
                 }
-                GlassText("Modes", theme, size = 16, weight = FontWeight.SemiBold, muted = true)
-                if (game == GameId.Shikaku) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        val modes = ShikakuMode.values().toList()
-                        items(modes.size) { index ->
-                            val mode = modes[index]
-                            ModeChip(
-                                label = mode.label,
-                                summary = mode.summary,
-                                theme = theme,
-                                selected = mode == shikakuMode,
-                                enabled = true,
-                            ) { onShikakuMode(mode) }
+                if (game == GameId.Shikaku || game == GameId.Sudoku) {
+                    GlassText("Modes", theme, size = 16, weight = FontWeight.SemiBold, muted = true)
+                    if (game == GameId.Shikaku) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            val modes = ShikakuMode.values().toList()
+                            items(modes.size) { index ->
+                                val mode = modes[index]
+                                ModeChip(
+                                    label = mode.label,
+                                    summary = mode.summary,
+                                    theme = theme,
+                                    selected = mode == shikakuMode,
+                                    enabled = true,
+                                ) { onShikakuMode(mode) }
+                            }
                         }
-                    }
-                } else {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        val modes = SudokuMode.values().toList()
-                        items(modes.size) { index ->
-                            val mode = modes[index]
-                            ModeChip(
-                                label = mode.label,
-                                summary = if (mode.playable) mode.summary else "${mode.summary} Planned engine.",
-                                theme = theme,
-                                selected = mode == sudokuMode,
-                                enabled = mode.playable,
-                            ) { onSudokuMode(mode) }
+                    } else {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            val modes = SudokuMode.values().toList()
+                            items(modes.size) { index ->
+                                val mode = modes[index]
+                                ModeChip(
+                                    label = mode.label,
+                                    summary = if (mode.playable) mode.summary else "${mode.summary} Planned engine.",
+                                    theme = theme,
+                                    selected = mode == sudokuMode,
+                                    enabled = mode.playable,
+                                ) { onSudokuMode(mode) }
+                            }
                         }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (continueSession != null) {
+                        ActionChip("Continue ${SessionTimerFormatter.format(continueSession.elapsedMs)}", theme, selected = true, icon = GlassIcon.Play, onClick = onContinue)
+                    }
                     ActionChip("Quick play", theme, icon = GlassIcon.Play, onClick = onStart)
                     ActionChip("Daily", theme, icon = GlassIcon.Calendar, onClick = onDaily)
                 }
@@ -444,18 +763,30 @@ private fun GamePlayScreen(
     game: GameId,
     difficulty: Difficulty,
     message: String,
+    timerText: String,
     shikakuPuzzle: ShikakuPuzzle,
     shikakuRects: List<ShikakuRect>,
     sudokuPuzzle: SudokuPuzzle,
     sudokuGrid: SudokuGrid,
     sudokuSelected: Pair<Int, Int>?,
     sudokuNotes: Boolean,
+    slitherlinkPuzzle: SlitherlinkPuzzle,
+    slitherlinkState: SlitherlinkState,
+    nurikabePuzzle: NurikabePuzzle,
+    nurikabeState: NurikabeState,
+    kakuroPuzzle: KakuroPuzzle,
+    kakuroState: KakuroState,
+    kakuroSelected: PuzzleCell?,
     onBack: () -> Unit,
     onMessage: (String) -> Unit,
     onShikakuRects: (List<ShikakuRect>) -> Unit,
     onSudokuGrid: (SudokuGrid) -> Unit,
     onSudokuSelected: (Pair<Int, Int>?) -> Unit,
     onSudokuNotes: (Boolean) -> Unit,
+    onSlitherlinkState: (SlitherlinkState) -> Unit,
+    onNurikabeState: (NurikabeState) -> Unit,
+    onKakuroState: (KakuroState) -> Unit,
+    onKakuroSelected: (PuzzleCell?) -> Unit,
 ) {
     var showShikakuComplete by remember(game, shikakuPuzzle.puzzleId) { mutableStateOf(false) }
 
@@ -477,13 +808,21 @@ private fun GamePlayScreen(
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            TopGameBar(theme, game, difficulty, onBack)
+            TopGameBar(theme, game, difficulty, timerText, onBack)
             GlassText(message, theme, muted = true, mono = true)
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                if (game == GameId.Shikaku) {
-                    ShikakuBoard(theme, shikakuPuzzle, shikakuRects, onRects = { updateShikakuRects(it, "Rectangle placed.") }, onMessage = onMessage)
-                } else {
-                    SudokuBoard(theme, sudokuPuzzle, sudokuGrid, sudokuSelected, onSelect = onSudokuSelected)
+                when (game) {
+                    GameId.Shikaku -> ShikakuBoard(theme, shikakuPuzzle, shikakuRects, onRects = { updateShikakuRects(it, "Rectangle placed.") }, onMessage = onMessage)
+                    GameId.Sudoku -> SudokuBoard(theme, sudokuPuzzle, sudokuGrid, sudokuSelected, onSelect = onSudokuSelected)
+                    GameId.Slitherlink -> SlitherlinkBoard(theme, slitherlinkPuzzle, slitherlinkState, onState = {
+                        onSlitherlinkState(it)
+                        onMessage(if (SlitherlinkValidator.isSolved(slitherlinkPuzzle, it)) "Slitherlink completed." else "Edge toggled.")
+                    })
+                    GameId.Nurikabe -> NurikabeBoard(theme, nurikabePuzzle, nurikabeState, onState = {
+                        onNurikabeState(it)
+                        onMessage(if (NurikabeValidator.isSolved(nurikabePuzzle, it)) "Nurikabe completed." else "Shade toggled.")
+                    })
+                    GameId.Kakuro -> KakuroBoard(theme, kakuroPuzzle, kakuroState, kakuroSelected, onSelect = onKakuroSelected)
                 }
             }
             Spacer(Modifier.height(84.dp))
@@ -493,8 +832,7 @@ private fun GamePlayScreen(
             theme = theme,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 20.dp, vertical = 14.dp)
-                .fillMaxWidth(),
+                .padding(horizontal = 20.dp, vertical = 14.dp),
         ) {
             if (game == GameId.Shikaku) {
                 DockButton("Undo", GlassIcon.Undo, false, theme) {
@@ -520,7 +858,7 @@ private fun GamePlayScreen(
                         onMessage(result.message ?: "Not solved yet.")
                     }
                 }
-            } else {
+            } else if (game == GameId.Sudoku) {
                 DockButton("Notes", GlassIcon.Notes, sudokuNotes, theme) {
                     onSudokuNotes(!sudokuNotes)
                     onMessage(if (!sudokuNotes) "Notes mode enabled." else "Value mode enabled.")
@@ -539,8 +877,39 @@ private fun GamePlayScreen(
                 DockButton("Check", GlassIcon.Check, false, theme) {
                     onMessage(if (SudokuValidator.isSolved(sudokuGrid)) "Sudoku solved cleanly." else "Keep going; some cells are unfinished or conflicting.")
                 }
+            } else {
+                DockButton("Erase", GlassIcon.Erase, false, theme) {
+                    when (game) {
+                        GameId.Slitherlink -> onSlitherlinkState(SlitherlinkState())
+                        GameId.Nurikabe -> onNurikabeState(NurikabeState())
+                        GameId.Kakuro -> onKakuroState(KakuroState())
+                        else -> Unit
+                    }
+                    onMessage("Board cleared.")
+                }
+                DockButton("Hint", GlassIcon.Hint, false, theme) {
+                    when (game) {
+                        GameId.Slitherlink -> onSlitherlinkState(SlitherlinkState(slitherlinkPuzzle.solutionEdges))
+                        GameId.Nurikabe -> onNurikabeState(NurikabeState(nurikabePuzzle.solutionShaded))
+                        GameId.Kakuro -> onKakuroState(KakuroState(kakuroPuzzle.solutionValues))
+                        else -> Unit
+                    }
+                    onMessage("${game.displayName} solution revealed.")
+                }
+                DockButton("Check", GlassIcon.Check, false, theme) {
+                    val solved = when (game) {
+                        GameId.Slitherlink -> SlitherlinkValidator.isSolved(slitherlinkPuzzle, slitherlinkState)
+                        GameId.Nurikabe -> NurikabeValidator.isSolved(nurikabePuzzle, nurikabeState)
+                        GameId.Kakuro -> KakuroValidator.isSolved(kakuroPuzzle, kakuroState)
+                        else -> false
+                    }
+                    onMessage(if (solved) "${game.displayName} completed." else "Not solved yet.")
+                }
             }
-            DockButton("Pause", GlassIcon.Pause, false, theme) { onMessage("Paused without leaving the board.") }
+            DockButton("Pause", GlassIcon.Pause, false, theme) {
+                onMessage("Paused and saved.")
+                onBack()
+            }
         }
 
         if (game == GameId.Sudoku) {
@@ -551,6 +920,19 @@ private fun GamePlayScreen(
                 grid = sudokuGrid,
                 puzzle = sudokuPuzzle,
                 onGrid = onSudokuGrid,
+                onMessage = onMessage,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 100.dp, start = 18.dp, end = 18.dp),
+            )
+        }
+        if (game == GameId.Kakuro) {
+            KakuroKeypad(
+                theme = theme,
+                selected = kakuroSelected,
+                state = kakuroState,
+                puzzle = kakuroPuzzle,
+                onState = onKakuroState,
                 onMessage = onMessage,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -615,7 +997,7 @@ private fun CompletionPopup(
 }
 
 @Composable
-private fun TopGameBar(theme: GlassTheme, game: GameId, difficulty: Difficulty, onBack: () -> Unit) {
+private fun TopGameBar(theme: GlassTheme, game: GameId, difficulty: Difficulty, timerText: String, onBack: () -> Unit) {
     GlassPanel(theme, Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(12.dp),
@@ -625,7 +1007,7 @@ private fun TopGameBar(theme: GlassTheme, game: GameId, difficulty: Difficulty, 
             GlassIconButton("Back", theme, GlassIcon.Back, onClick = onBack)
             Column(Modifier.weight(1f)) {
                 GlassText(game.displayName, theme, size = 22, weight = FontWeight.Bold)
-                GlassText("${difficulty.label} / 00:00", theme, size = 13, muted = true, mono = true)
+                GlassText("${difficulty.label} / $timerText", theme, size = 13, muted = true, mono = true)
             }
             GlassIconButton("Settings", theme, GlassIcon.Settings, onClick = {})
         }
@@ -835,6 +1217,181 @@ private fun SudokuBoard(
 }
 
 @Composable
+private fun SlitherlinkBoard(
+    theme: GlassTheme,
+    puzzle: SlitherlinkPuzzle,
+    state: SlitherlinkState,
+    onState: (SlitherlinkState) -> Unit,
+) {
+    var boardSize by remember { mutableStateOf(IntSize.Zero) }
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .semantics { contentDescription = "Slitherlink board" }
+            .onSizeChanged { boardSize = it }
+            .pointerInput(puzzle, state) {
+                detectTapGestures { offset ->
+                    loopEdgeAt(offset, boardSize, puzzle.width, puzzle.height)?.let { edge ->
+                        onState(SlitherlinkInteractions.toggleEdge(state, edge))
+                    }
+                }
+            },
+    ) {
+        val cell = min(size.width / (puzzle.width + 1), size.height / (puzzle.height + 1))
+        val left = (size.width - cell * puzzle.width) / 2f
+        val top = (size.height - cell * puzzle.height) / 2f
+        drawRoundRect(theme.panelStrong, Offset(left - cell * 0.42f, top - cell * 0.42f), Size(cell * (puzzle.width + 0.84f), cell * (puzzle.height + 0.84f)), CornerRadius(24f, 24f))
+        for (edge in puzzle.solutionEdges) {
+            drawLoopEdge(edge, left, top, cell, theme.stroke.copy(alpha = 0.22f), 5f)
+        }
+        state.markedEdges.forEach { edge ->
+            drawLoopEdge(edge, left, top, cell, theme.accent, 8f)
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = theme.text.toArgbInt()
+            textAlign = Paint.Align.CENTER
+            textSize = cell * 0.30f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+        puzzle.clues.forEach { clue ->
+            drawContext.canvas.nativeCanvas.drawText(
+                clue.value.toString(),
+                left + (clue.cell.col + 0.5f) * cell,
+                top + (clue.cell.row + 0.62f) * cell,
+                paint,
+            )
+        }
+        for (row in 0..puzzle.height) {
+            for (col in 0..puzzle.width) {
+                drawCircle(theme.text.copy(alpha = 0.74f), radius = 4.8f, center = Offset(left + col * cell, top + row * cell))
+            }
+        }
+    }
+}
+
+@Composable
+private fun NurikabeBoard(
+    theme: GlassTheme,
+    puzzle: NurikabePuzzle,
+    state: NurikabeState,
+    onState: (NurikabeState) -> Unit,
+) {
+    var boardSize by remember { mutableStateOf(IntSize.Zero) }
+    val clues = puzzle.clues.associateBy { it.cell }
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(puzzle.width.toFloat() / puzzle.height.toFloat())
+            .semantics { contentDescription = "Nurikabe board" }
+            .onSizeChanged { boardSize = it }
+            .pointerInput(puzzle, state) {
+                detectTapGestures { offset ->
+                    val hit = cellAt(offset, boardSize, puzzle.width, puzzle.height) ?: return@detectTapGestures
+                    val cell = PuzzleCell(hit.row, hit.col)
+                    if (cell !in clues) onState(NurikabeInteractions.toggleShade(state, cell))
+                }
+            },
+    ) {
+        val cell = min(size.width / puzzle.width, size.height / puzzle.height)
+        val left = (size.width - cell * puzzle.width) / 2f
+        val top = (size.height - cell * puzzle.height) / 2f
+        drawRoundRect(theme.panelStrong, Offset(left, top), Size(cell * puzzle.width, cell * puzzle.height), CornerRadius(24f, 24f))
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            textSize = cell * 0.36f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+        for (row in 0 until puzzle.height) {
+            for (col in 0 until puzzle.width) {
+                val puzzleCell = PuzzleCell(row, col)
+                val clue = clues[puzzleCell]
+                val shaded = puzzleCell in state.shadedCells
+                drawRoundRect(
+                    color = when {
+                        clue != null -> theme.accent.copy(alpha = 0.26f)
+                        shaded -> theme.text.copy(alpha = 0.72f)
+                        else -> theme.background.copy(alpha = 0.32f)
+                    },
+                    topLeft = Offset(left + col * cell + 3f, top + row * cell + 3f),
+                    size = Size(cell - 6f, cell - 6f),
+                    cornerRadius = CornerRadius(10f, 10f),
+                )
+                if (clue != null) {
+                    paint.color = theme.text.toArgbInt()
+                    drawContext.canvas.nativeCanvas.drawText(clue.value.toString(), left + (col + 0.5f) * cell, top + (row + 0.64f) * cell, paint)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KakuroBoard(
+    theme: GlassTheme,
+    puzzle: KakuroPuzzle,
+    state: KakuroState,
+    selected: PuzzleCell?,
+    onSelect: (PuzzleCell?) -> Unit,
+) {
+    var boardSize by remember { mutableStateOf(IntSize.Zero) }
+    val clues = puzzle.clues.associateBy { it.cell }
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(puzzle.width.toFloat() / puzzle.height.toFloat())
+            .semantics { contentDescription = "Kakuro board" }
+            .onSizeChanged { boardSize = it }
+            .pointerInput(puzzle) {
+                detectTapGestures { offset ->
+                    val hit = cellAt(offset, boardSize, puzzle.width, puzzle.height) ?: return@detectTapGestures
+                    val cell = PuzzleCell(hit.row, hit.col)
+                    onSelect(if (cell in puzzle.whiteCells) cell else null)
+                }
+            },
+    ) {
+        val cell = min(size.width / puzzle.width, size.height / puzzle.height)
+        val left = (size.width - cell * puzzle.width) / 2f
+        val top = (size.height - cell * puzzle.height) / 2f
+        drawRoundRect(theme.panelStrong, Offset(left, top), Size(cell * puzzle.width, cell * puzzle.height), CornerRadius(24f, 24f))
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+        for (row in 0 until puzzle.height) {
+            for (col in 0 until puzzle.width) {
+                val puzzleCell = PuzzleCell(row, col)
+                val isWhite = puzzleCell in puzzle.whiteCells
+                val clue = clues[puzzleCell]
+                drawRoundRect(
+                    color = when {
+                        puzzleCell == selected -> theme.accent.copy(alpha = 0.32f)
+                        isWhite -> theme.background.copy(alpha = 0.32f)
+                        clue != null -> theme.accentAlt.copy(alpha = 0.28f)
+                        else -> theme.text.copy(alpha = 0.16f)
+                    },
+                    topLeft = Offset(left + col * cell + 3f, top + row * cell + 3f),
+                    size = Size(cell - 6f, cell - 6f),
+                    cornerRadius = CornerRadius(10f, 10f),
+                )
+                if (isWhite) {
+                    state.values[puzzleCell]?.let { value ->
+                        paint.color = theme.accent.toArgbInt()
+                        paint.textSize = cell * 0.42f
+                        drawContext.canvas.nativeCanvas.drawText(value.toString(), left + (col + 0.5f) * cell, top + (row + 0.66f) * cell, paint)
+                    }
+                } else if (clue != null) {
+                    paint.color = theme.text.toArgbInt()
+                    paint.textSize = cell * 0.16f
+                    val label = listOfNotNull(clue.downSum?.let { "D$it" }, clue.rightSum?.let { "R$it" }).joinToString(" ")
+                    drawContext.canvas.nativeCanvas.drawText(label, left + (col + 0.5f) * cell, top + (row + 0.58f) * cell, paint)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SudokuKeypad(
     theme: GlassTheme,
     selected: Pair<Int, Int>?,
@@ -859,6 +1416,35 @@ private fun SudokuKeypad(
                             onMessage("Note $digit added.")
                         } else {
                             onGrid(grid.withValue(cell.first, cell.second, digit))
+                            onMessage("Digit $digit placed.")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KakuroKeypad(
+    theme: GlassTheme,
+    selected: PuzzleCell?,
+    state: KakuroState,
+    puzzle: KakuroPuzzle,
+    onState: (KakuroState) -> Unit,
+    onMessage: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(visible = selected != null, enter = fadeIn() + scaleIn(initialScale = 0.96f), exit = fadeOut() + scaleOut(targetScale = 0.96f), modifier = modifier) {
+        GlassPanel(theme, Modifier.fillMaxWidth(), radius = 26.dp) {
+            Row(Modifier.padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                (1..9).forEach { digit ->
+                    ActionChip(digit.toString(), theme, compact = true) {
+                        val cell = selected ?: return@ActionChip
+                        if (cell !in puzzle.whiteCells) {
+                            onMessage("Only white Kakuro cells can be filled.")
+                        } else {
+                            onState(KakuroInteractions.setValue(state, cell, digit))
                             onMessage("Digit $digit placed.")
                         }
                     }
@@ -1062,11 +1648,15 @@ private fun ModeChip(
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
-    GlassPanel(theme, Modifier.width(220.dp), radius = 22.dp) {
+    GlassPanel(
+        theme = theme,
+        modifier = Modifier
+            .width(220.dp)
+            .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick),
+        radius = 22.dp,
+    ) {
         Column(
-            Modifier
-                .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
-                .padding(14.dp),
+            Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1090,9 +1680,21 @@ private fun ModeChip(
 }
 
 @Composable
-private fun RecommendedGameCard(theme: GlassTheme, title: String, body: String, modes: String) {
+private fun RecommendedGameCard(
+    theme: GlassTheme,
+    game: GameId,
+    body: String,
+    hint: String,
+    onOpen: (GameId) -> Unit,
+    onStart: (GameId) -> Unit,
+) {
     GlassPanel(theme, Modifier.fillMaxWidth(), radius = 24.dp) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            Modifier
+                .clickable(remember { MutableInteractionSource() }, indication = null) { onOpen(game) }
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(
                     Modifier
@@ -1103,10 +1705,14 @@ private fun RecommendedGameCard(theme: GlassTheme, title: String, body: String, 
                 ) {
                     com.thefadghost.glasspuzzlehub.ui.IconCanvas(GlassIcon.Grid, theme.accentAlt, Modifier.size(20.dp))
                 }
-                GlassText(title, theme, size = 20, weight = FontWeight.Bold)
+                GlassText(game.displayName, theme, size = 20, weight = FontWeight.Bold)
             }
             GlassText(body, theme, muted = true)
-            GlassText(modes, theme, size = 12, muted = true, mono = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionChip("Options", theme, compact = true) { onOpen(game) }
+                ActionChip("Play", theme, compact = true, icon = GlassIcon.Play) { onStart(game) }
+            }
+            GlassText(hint, theme, size = 12, muted = true, mono = true)
         }
     }
 }
@@ -1190,7 +1796,13 @@ private fun ActionChip(
 @Composable
 private fun PreviewBoard(theme: GlassTheme, game: GameId, modifier: Modifier = Modifier) {
     Canvas(modifier.clip(RoundedCornerShape(24.dp))) {
-        val n = if (game == GameId.Shikaku) 5 else 9
+        val n = when (game) {
+            GameId.Shikaku -> 5
+            GameId.Sudoku -> 9
+            GameId.Slitherlink -> 4
+            GameId.Nurikabe -> 5
+            GameId.Kakuro -> 5
+        }
         val cell = min(size.width, size.height) / n
         val left = (size.width - cell * n) / 2f
         val top = (size.height - cell * n) / 2f
@@ -1200,14 +1812,37 @@ private fun PreviewBoard(theme: GlassTheme, game: GameId, modifier: Modifier = M
                 drawRoundRect(theme.background.copy(alpha = 0.32f), Offset(left + c * cell + 2f, top + r * cell + 2f), Size(cell - 4f, cell - 4f), CornerRadius(8f, 8f))
             }
         }
-        if (game == GameId.Shikaku) {
-            drawRoundRect(theme.accent.copy(alpha = 0.48f), Offset(left + cell * 0, top + cell * 0), Size(cell, cell * 5), CornerRadius(10f, 10f))
-            drawRoundRect(theme.accentAlt.copy(alpha = 0.42f), Offset(left + cell * 2, top + cell * 0), Size(cell * 3, cell * 2), CornerRadius(10f, 10f))
-        } else {
-            for (line in 0..9) {
-                val thick = if (line % 3 == 0) 3f else 1f
-                drawLine(theme.stroke, Offset(left + line * cell, top), Offset(left + line * cell, top + cell * 9), thick)
-                drawLine(theme.stroke, Offset(left, top + line * cell), Offset(left + cell * 9, top + line * cell), thick)
+        when (game) {
+            GameId.Shikaku -> {
+                drawRoundRect(theme.accent.copy(alpha = 0.48f), Offset(left + cell * 0, top + cell * 0), Size(cell, cell * 5), CornerRadius(10f, 10f))
+                drawRoundRect(theme.accentAlt.copy(alpha = 0.42f), Offset(left + cell * 2, top + cell * 0), Size(cell * 3, cell * 2), CornerRadius(10f, 10f))
+            }
+            GameId.Sudoku -> {
+                for (line in 0..9) {
+                    val thick = if (line % 3 == 0) 3f else 1f
+                    drawLine(theme.stroke, Offset(left + line * cell, top), Offset(left + line * cell, top + cell * 9), thick)
+                    drawLine(theme.stroke, Offset(left, top + line * cell), Offset(left + cell * 9, top + line * cell), thick)
+                }
+            }
+            GameId.Slitherlink -> {
+                for (line in 0..n) {
+                    drawLine(theme.accent, Offset(left, top + line * cell), Offset(left + n * cell, top + line * cell), 3f)
+                    drawLine(theme.accent, Offset(left + line * cell, top), Offset(left + line * cell, top + n * cell), 3f)
+                }
+            }
+            GameId.Nurikabe -> {
+                for (r in 0 until n) {
+                    for (c in 0 until n) {
+                        if (r % 2 == 1 || c % 2 == 1) {
+                            drawRoundRect(theme.text.copy(alpha = 0.58f), Offset(left + c * cell + 3f, top + r * cell + 3f), Size(cell - 6f, cell - 6f), CornerRadius(8f, 8f))
+                        }
+                    }
+                }
+            }
+            GameId.Kakuro -> {
+                drawRoundRect(theme.accent.copy(alpha = 0.36f), Offset(left + cell, top + cell), Size(cell, cell), CornerRadius(8f, 8f))
+                drawRoundRect(theme.accent.copy(alpha = 0.36f), Offset(left + cell * 2, top + cell), Size(cell, cell), CornerRadius(8f, 8f))
+                drawRoundRect(theme.accentAlt.copy(alpha = 0.30f), Offset(left, top + cell), Size(cell, cell * 2), CornerRadius(8f, 8f))
             }
         }
     }
@@ -1240,6 +1875,70 @@ private fun rectBetween(a: ShikakuCell, b: ShikakuCell): ShikakuRect =
         right = maxOf(a.col, b.col),
     )
 
+private fun loopEdgeAt(offset: Offset, size: IntSize, width: Int, height: Int): LoopEdge? {
+    if (size.width == 0 || size.height == 0) return null
+    val cell = min(size.width.toFloat() / (width + 1), size.height.toFloat() / (height + 1))
+    val left = (size.width - cell * width) / 2f
+    val top = (size.height - cell * height) / 2f
+    val localX = offset.x - left
+    val localY = offset.y - top
+    val threshold = cell * 0.22f
+    val horizontalRow = floor(localY / cell + 0.5f).toInt()
+    val horizontalCol = floor(localX / cell).toInt()
+    val horizontalY = horizontalRow * cell
+    val horizontalHit = horizontalRow in 0..height &&
+        horizontalCol in 0 until width &&
+        localX >= horizontalCol * cell &&
+        localX <= (horizontalCol + 1) * cell &&
+        abs(localY - horizontalY) <= threshold
+    val verticalRow = floor(localY / cell).toInt()
+    val verticalCol = floor(localX / cell + 0.5f).toInt()
+    val verticalX = verticalCol * cell
+    val verticalHit = verticalRow in 0 until height &&
+        verticalCol in 0..width &&
+        localY >= verticalRow * cell &&
+        localY <= (verticalRow + 1) * cell &&
+        abs(localX - verticalX) <= threshold
+    return when {
+        horizontalHit && verticalHit -> {
+            val hDistance = abs(localY - horizontalY)
+            val vDistance = abs(localX - verticalX)
+            if (hDistance <= vDistance) LoopEdge(horizontalRow, horizontalCol, EdgeOrientation.Horizontal) else LoopEdge(verticalRow, verticalCol, EdgeOrientation.Vertical)
+        }
+        horizontalHit -> LoopEdge(horizontalRow, horizontalCol, EdgeOrientation.Horizontal)
+        verticalHit -> LoopEdge(verticalRow, verticalCol, EdgeOrientation.Vertical)
+        else -> null
+    }
+}
+
+private fun DrawScope.drawLoopEdge(edge: LoopEdge, left: Float, top: Float, cell: Float, color: Color, width: Float) {
+    when (edge.orientation) {
+        EdgeOrientation.Horizontal -> drawLine(
+            color = color,
+            start = Offset(left + edge.col * cell, top + edge.row * cell),
+            end = Offset(left + (edge.col + 1) * cell, top + edge.row * cell),
+            strokeWidth = width,
+            cap = StrokeCap.Round,
+        )
+        EdgeOrientation.Vertical -> drawLine(
+            color = color,
+            start = Offset(left + edge.col * cell, top + edge.row * cell),
+            end = Offset(left + edge.col * cell, top + (edge.row + 1) * cell),
+            strokeWidth = width,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+private fun gameDetailSummary(game: GameId): String =
+    when (game) {
+        GameId.Shikaku -> "Divide the board into exact clue rectangles."
+        GameId.Sudoku -> "Fill every row, column, and box with 1 through 9."
+        GameId.Slitherlink -> "Toggle edges to draw one continuous clue-matching loop."
+        GameId.Nurikabe -> "Shade the wall while leaving numbered islands intact."
+        GameId.Kakuro -> "Fill white cells so every across and down sum matches."
+    }
+
 private fun Color.toArgbInt(): Int {
     val a = (alpha * 255).toInt().coerceIn(0, 255)
     val r = (red * 255).toInt().coerceIn(0, 255)
@@ -1247,6 +1946,42 @@ private fun Color.toArgbInt(): Int {
     val b = (blue * 255).toInt().coerceIn(0, 255)
     return android.graphics.Color.argb(a, r, g, b)
 }
+
+@Serializable
+private data class ShikakuSavePayload(
+    val puzzle: ShikakuPuzzle,
+    val rects: List<ShikakuRect>,
+    val mode: ShikakuMode,
+)
+
+@Serializable
+private data class SudokuSavePayload(
+    val puzzle: SudokuPuzzle,
+    val grid: SudokuGrid,
+    val selectedRow: Int?,
+    val selectedCol: Int?,
+    val notes: Boolean,
+    val mode: String,
+)
+
+@Serializable
+private data class SlitherlinkSavePayload(
+    val puzzle: SlitherlinkPuzzle,
+    val state: SlitherlinkState,
+)
+
+@Serializable
+private data class NurikabeSavePayload(
+    val puzzle: NurikabePuzzle,
+    val state: NurikabeState,
+)
+
+@Serializable
+private data class KakuroSavePayload(
+    val puzzle: KakuroPuzzle,
+    val state: KakuroState,
+    val selected: PuzzleCell?,
+)
 
 private fun sampleShikakuPuzzle(): ShikakuPuzzle {
     val solution = listOf(
@@ -1265,6 +2000,15 @@ private fun sampleShikakuPuzzle(): ShikakuPuzzle {
         difficulty = Difficulty.Easy,
     )
 }
+
+private fun sampleSlitherlinkPuzzle(): SlitherlinkPuzzle =
+    SlitherlinkGenerator.generate(0L, Difficulty.Easy)
+
+private fun sampleNurikabePuzzle(): NurikabePuzzle =
+    NurikabeGenerator.generate(0L, Difficulty.Easy)
+
+private fun sampleKakuroPuzzle(): KakuroPuzzle =
+    KakuroGenerator.generate(0L, Difficulty.Easy)
 
 private fun sampleSudokuPuzzle(): SudokuPuzzle {
     val solution = SudokuGrid.fromRows(

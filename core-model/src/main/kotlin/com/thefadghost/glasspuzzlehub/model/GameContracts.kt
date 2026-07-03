@@ -8,6 +8,9 @@ import java.security.MessageDigest
 enum class GameId(val value: String, val displayName: String) {
     Shikaku("shikaku", "Shikaku"),
     Sudoku("sudoku", "Sudoku"),
+    Slitherlink("slitherlink", "Slitherlink"),
+    Nurikabe("nurikabe", "Nurikabe"),
+    Kakuro("kakuro", "Kakuro"),
 }
 
 @Serializable

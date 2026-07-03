@@ -1,3 +1,36 @@
+# Glass Puzzle Hub v2.1.0
+
+Session, timer, and expanded-games release.
+
+## Added
+
+- Smart session timer with foreground-only elapsed time.
+- Continue sessions backed by Room `game_sessions`, including restored puzzle state and elapsed time after app close/force stop.
+- Playable Slitherlink compact engine and Canvas board.
+- Playable Nurikabe compact engine and Canvas board.
+- Playable Kakuro compact engine, Canvas board, and digit keypad.
+- `game-variety` module with unit-tested Slitherlink, Nurikabe, and Kakuro validators.
+- v2.1 design spec and implementation plan docs.
+
+## Changed
+
+- Mode chips now make the whole card area clickable, not just the text area.
+- Floating bottom dock now wraps its four icons instead of stretching full width.
+- Pause action now leaves the play screen, saving and pausing the current session.
+- Daily screen can start all five games.
+- App version is now `2.1.0` / versionCode `4`.
+
+## Fixed
+
+- Shikaku/Sudoku active state no longer disappears when the process is closed after a saved move.
+- Timers no longer keep adding wall-clock time while the app is backgrounded.
+
+## Known Limits
+
+- Slitherlink, Nurikabe, and Kakuro use compact first-pass generators; deeper difficulty grading and advanced hints are still future work.
+- Full archive/history browsing is still basic.
+- Release APK is debug-signed unless a production signing config is added.
+
 # Glass Puzzle Hub v2.0.0
 
 Major performance and playability release.

@@ -12,6 +12,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.Room
 import androidx.room.RoomDatabase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -79,6 +80,12 @@ interface HubDao {
     @Query("SELECT * FROM game_sessions WHERE completedAt IS NULL ORDER BY startedAt DESC")
     fun activeSessions(): Flow<List<GameSessionEntity>>
 
+    @Query("SELECT * FROM game_sessions WHERE gameId = :gameId AND completedAt IS NULL ORDER BY startedAt DESC LIMIT 1")
+    fun activeSessionForGame(gameId: String): Flow<GameSessionEntity?>
+
+    @Query("SELECT * FROM game_sessions WHERE gameId = :gameId AND completedAt IS NULL ORDER BY startedAt DESC LIMIT 1")
+    suspend fun latestActiveSessionForGame(gameId: String): GameSessionEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSession(session: GameSessionEntity)
 
@@ -108,6 +115,51 @@ interface HubDao {
 )
 abstract class HubDatabase : RoomDatabase() {
     abstract fun hubDao(): HubDao
+}
+
+class SessionRepository private constructor(private val dao: HubDao) {
+    val activeSessions: Flow<List<GameSessionEntity>> = dao.activeSessions()
+
+    fun activeSessionForGame(gameId: String): Flow<GameSessionEntity?> =
+        dao.activeSessionForGame(gameId)
+
+    suspend fun latestActiveSessionForGame(gameId: String): GameSessionEntity? =
+        dao.latestActiveSessionForGame(gameId)
+
+    suspend fun upsertSession(session: GameSessionEntity) {
+        dao.upsertSession(session)
+    }
+
+    suspend fun completeSession(
+        session: GameSessionEntity,
+        statePayload: String,
+        elapsedMs: Long,
+        completedAt: Long = System.currentTimeMillis(),
+    ) {
+        dao.upsertSession(
+            session.copy(
+                statePayload = statePayload,
+                elapsedMs = elapsedMs,
+                completedAt = completedAt,
+            ),
+        )
+    }
+
+    companion object {
+        @Volatile
+        private var instance: SessionRepository? = null
+
+        fun get(context: Context): SessionRepository =
+            instance ?: synchronized(this) {
+                instance ?: SessionRepository(
+                    Room.databaseBuilder(
+                        context.applicationContext,
+                        HubDatabase::class.java,
+                        "glass-puzzle-hub.db",
+                    ).build().hubDao(),
+                ).also { instance = it }
+            }
+    }
 }
 
 data class HubSettings(

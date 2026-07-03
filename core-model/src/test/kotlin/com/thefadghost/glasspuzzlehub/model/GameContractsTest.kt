@@ -9,6 +9,9 @@ class GameContractsTest {
     fun gameIdsExposeStableStringValues() {
         assertEquals("shikaku", GameId.Shikaku.value)
         assertEquals("sudoku", GameId.Sudoku.value)
+        assertEquals("slitherlink", GameId.Slitherlink.value)
+        assertEquals("nurikabe", GameId.Nurikabe.value)
+        assertEquals("kakuro", GameId.Kakuro.value)
     }
 
     @Test
