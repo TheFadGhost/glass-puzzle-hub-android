@@ -80,6 +80,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thefadghost.glasspuzzlehub.model.Difficulty
 import com.thefadghost.glasspuzzlehub.model.GameId
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuCell
+import com.thefadghost.glasspuzzlehub.shikaku.ShikakuCompletion
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuGenerator
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuPuzzle
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuRect
@@ -121,8 +122,8 @@ private fun GlassPuzzleHubApp() {
     val scope = rememberCoroutineScope()
     val settingsStore = remember { SettingsStore(context.applicationContext) }
     val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = HubSettings())
-    val theme = GlassThemes.all.firstOrNull { it.id == settings.themeId } ?: GlassThemes.Noir
-    var screen by remember { mutableStateOf(Screen.Home) }
+    val theme = GlassThemes.all.firstOrNull { it.id == settings.themeId } ?: GlassThemes.Solar
+    var screen by remember { mutableStateOf(Screen.Games) }
     var activeGame by remember { mutableStateOf(GameId.Shikaku) }
     var difficulty by remember { mutableStateOf(Difficulty.Easy) }
     var shikakuPuzzle by remember { mutableStateOf(sampleShikakuPuzzle()) }
@@ -169,13 +170,13 @@ private fun GlassPuzzleHubApp() {
                     Screen.Games -> GamesScreen(theme, onOpen = {
                         activeGame = it
                         screen = Screen.Detail
-                    })
+                    }, onStart = { startGame(it) }, onDaily = { screen = Screen.Daily }, onThemes = { screen = Screen.Themes }, onSettings = { screen = Screen.Settings })
                     Screen.Daily -> DailyScreen(theme, onStart = { game, level -> startGame(game, level, daily = true) })
                     Screen.Archive -> InfoScreen(theme, "Archive", "Unfinished sessions and completed daily records will collect here as you play.")
                     Screen.Stats -> StatsScreen(theme, shikakuSolved = shikakuRects.size, sudokuFilled = sudokuGrid.values.count { it != 0 })
                     Screen.Themes -> ThemesScreen(theme, onTheme = { next -> scope.launch { settingsStore.setTheme(next.id) } })
                     Screen.Settings -> SettingsScreen(theme, settings, onToggle = { key, value -> scope.launch { settingsStore.setBoolean(key, value) } })
-                    Screen.Detail -> GameDetailScreen(theme, activeGame, difficulty, onDifficulty = { difficulty = it }, onBack = { screen = Screen.Home }, onStart = { startGame(activeGame, difficulty) }, onDaily = { startGame(activeGame, difficulty, daily = true) })
+                    Screen.Detail -> GameDetailScreen(theme, activeGame, difficulty, onDifficulty = { difficulty = it }, onBack = { screen = Screen.Games }, onStart = { startGame(activeGame, difficulty) }, onDaily = { startGame(activeGame, difficulty, daily = true) })
                     Screen.Play -> GamePlayScreen(
                         theme = theme,
                         game = activeGame,
@@ -208,11 +209,10 @@ private fun GlassPuzzleHubApp() {
                         .padding(horizontal = 20.dp, vertical = 14.dp)
                         .fillMaxWidth(),
                 ) {
-                    DockButton("Home", GlassIcon.Home, screen == Screen.Home, theme) { screen = Screen.Home }
                     DockButton("Games", GlassIcon.Grid, screen == Screen.Games, theme) { screen = Screen.Games }
                     DockButton("Daily", GlassIcon.Calendar, screen == Screen.Daily, theme) { screen = Screen.Daily }
-                    DockButton("Stats", GlassIcon.Chart, screen == Screen.Stats, theme) { screen = Screen.Stats }
                     DockButton("Themes", GlassIcon.Palette, screen == Screen.Themes, theme) { screen = Screen.Themes }
+                    DockButton("Settings", GlassIcon.Settings, screen == Screen.Settings, theme) { screen = Screen.Settings }
                 }
             }
         }
@@ -252,11 +252,36 @@ private fun HomeScreen(theme: GlassTheme, message: String, onOpenGame: (GameId) 
 }
 
 @Composable
-private fun GamesScreen(theme: GlassTheme, onOpen: (GameId) -> Unit) {
+private fun GamesScreen(
+    theme: GlassTheme,
+    onOpen: (GameId) -> Unit,
+    onStart: (GameId) -> Unit,
+    onDaily: () -> Unit,
+    onThemes: () -> Unit,
+    onSettings: () -> Unit,
+) {
     ScreenColumn {
-        Header(theme, "Games", "A hub architecture ready for more puzzle modules.")
-        GameWideRow(theme, GameId.Shikaku, "Rectangle partition logic with area clues.", onOpen)
-        GameWideRow(theme, GameId.Sudoku, "Classic row, column, and box number placement.", onOpen)
+        Header(theme, "Games", "Pick one of the two logic puzzles, then tune difficulty and themes.")
+        PrimaryGameOption(
+            theme = theme,
+            game = GameId.Shikaku,
+            body = "Area-clue rectangles with a real solved popup.",
+            onOpen = { onOpen(GameId.Shikaku) },
+            onStart = { onStart(GameId.Shikaku) },
+        )
+        PrimaryGameOption(
+            theme = theme,
+            game = GameId.Sudoku,
+            body = "9x9 logic with keypad, notes, hints, and checks.",
+            onOpen = { onOpen(GameId.Sudoku) },
+            onStart = { onStart(GameId.Sudoku) },
+        )
+        GlassText("Extras", theme, size = 14, weight = FontWeight.SemiBold, muted = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ExtraShortcut(theme, "Daily", "Date seeds", GlassIcon.Calendar, Modifier.weight(1f), onDaily)
+            ExtraShortcut(theme, "Themes", "Color sets", GlassIcon.Palette, Modifier.weight(1f), onThemes)
+        }
+        ExtraShortcut(theme, "Settings", "Motion, haptics, contrast, sound", GlassIcon.Settings, Modifier.fillMaxWidth(), onSettings)
         Spacer(Modifier.height(92.dp))
     }
 }
@@ -339,6 +364,19 @@ private fun GamePlayScreen(
     onSudokuSelected: (Pair<Int, Int>?) -> Unit,
     onSudokuNotes: (Boolean) -> Unit,
 ) {
+    var showShikakuComplete by remember(game, shikakuPuzzle.puzzleId) { mutableStateOf(false) }
+
+    fun updateShikakuRects(next: List<ShikakuRect>, messageWhenOpen: String) {
+        onShikakuRects(next)
+        if (ShikakuCompletion.isComplete(shikakuPuzzle, next)) {
+            showShikakuComplete = true
+            onMessage("Completed: every Shikaku rectangle is correct.")
+        } else {
+            showShikakuComplete = false
+            onMessage(messageWhenOpen)
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -350,7 +388,7 @@ private fun GamePlayScreen(
             GlassText(message, theme, muted = true, mono = true)
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 if (game == GameId.Shikaku) {
-                    ShikakuBoard(theme, shikakuPuzzle, shikakuRects, onRects = onShikakuRects, onMessage = onMessage)
+                    ShikakuBoard(theme, shikakuPuzzle, shikakuRects, onRects = { updateShikakuRects(it, "Rectangle placed.") }, onMessage = onMessage)
                 } else {
                     SudokuBoard(theme, sudokuPuzzle, sudokuGrid, sudokuSelected, onSelect = onSudokuSelected)
                 }
@@ -367,23 +405,27 @@ private fun GamePlayScreen(
         ) {
             if (game == GameId.Shikaku) {
                 DockButton("Undo", GlassIcon.Undo, false, theme) {
-                    onShikakuRects(shikakuRects.dropLast(1))
-                    onMessage("Last rectangle removed.")
+                    updateShikakuRects(shikakuRects.dropLast(1), "Last rectangle removed.")
                 }
                 DockButton("Erase", GlassIcon.Erase, false, theme) {
-                    onShikakuRects(emptyList())
-                    onMessage("Board cleared.")
+                    updateShikakuRects(emptyList(), "Board cleared.")
                 }
                 DockButton("Hint", GlassIcon.Hint, false, theme) {
                     val next = shikakuPuzzle.solution.firstOrNull { solution -> shikakuRects.none { it == solution } }
                     if (next != null) {
-                        onShikakuRects(shikakuRects + next)
-                        onMessage("Hint placed one exact rectangle.")
+                        updateShikakuRects(shikakuRects + next, "Hint placed one exact rectangle.")
+                    } else {
+                        onMessage("No hint needed; every solution rectangle is already placed.")
                     }
                 }
                 DockButton("Check", GlassIcon.Check, false, theme) {
                     val result = ShikakuValidator.validate(shikakuPuzzle, shikakuRects)
-                    onMessage(if (result.isValid) "Shikaku solved cleanly." else result.message ?: "Not solved yet.")
+                    if (result.isValid) {
+                        showShikakuComplete = true
+                        onMessage("Completed: every Shikaku rectangle is correct.")
+                    } else {
+                        onMessage(result.message ?: "Not solved yet.")
+                    }
                 }
             } else {
                 DockButton("Notes", GlassIcon.Notes, sudokuNotes, theme) {
@@ -421,6 +463,60 @@ private fun GamePlayScreen(
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 100.dp, start = 18.dp, end = 18.dp),
             )
+        }
+
+        CompletionPopup(
+            visible = game == GameId.Shikaku && showShikakuComplete,
+            theme = theme,
+            title = "Shikaku completed",
+            body = "${shikakuPuzzle.width}x${shikakuPuzzle.height} board solved with ${shikakuRects.size} exact rectangles.",
+            onKeep = { showShikakuComplete = false },
+            onClear = { updateShikakuRects(emptyList(), "Board cleared.") },
+        )
+    }
+}
+
+@Composable
+private fun CompletionPopup(
+    visible: Boolean,
+    theme: GlassTheme,
+    title: String,
+    body: String,
+    onKeep: () -> Unit,
+    onClear: () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + scaleIn(initialScale = 0.96f),
+        exit = fadeOut() + scaleOut(targetScale = 0.96f),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.34f))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            GlassPanel(theme, Modifier.fillMaxWidth(), radius = 30.dp) {
+                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Box(
+                        Modifier
+                            .size(58.dp)
+                            .clip(RoundedCornerShape(29.dp))
+                            .background(theme.success.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        com.thefadghost.glasspuzzlehub.ui.IconCanvas(GlassIcon.Check, theme.success, Modifier.size(30.dp))
+                    }
+                    GlassText(title, theme, size = 30, weight = FontWeight.Bold)
+                    GlassText(body, theme, muted = true)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ActionChip("Continue", theme, selected = true, icon = GlassIcon.Check, onClick = onKeep)
+                        ActionChip("Clear board", theme, icon = GlassIcon.Erase, onClick = onClear)
+                    }
+                }
+            }
         }
     }
 }
@@ -479,7 +575,6 @@ private fun ShikakuBoard(
                             val cluesInside = puzzle.clues.count { candidate.contains(it.cell) }
                             if (!overlaps && cluesInside <= 1) {
                                 onRects(rects + candidate)
-                                onMessage("Rectangle placed.")
                             } else {
                                 onMessage("That rectangle overlaps or captures too many clues.")
                             }
@@ -763,6 +858,69 @@ private fun GameCard(theme: GlassTheme, game: GameId, onOpen: () -> Unit, onStar
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ActionChip("Open", theme, onClick = onOpen)
                 ActionChip("Play", theme, icon = GlassIcon.Play, onClick = onStart)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrimaryGameOption(
+    theme: GlassTheme,
+    game: GameId,
+    body: String,
+    onOpen: () -> Unit,
+    onStart: () -> Unit,
+) {
+    GlassPanel(theme, Modifier.fillMaxWidth(), radius = 28.dp) {
+        Row(
+            Modifier
+                .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onOpen)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            PreviewBoard(theme, game, Modifier.size(112.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                GlassText(game.displayName, theme, size = 25, weight = FontWeight.Bold)
+                GlassText(body, theme, size = 14, muted = true)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ActionChip("Options", theme, compact = true, onClick = onOpen)
+                    ActionChip("Play", theme, compact = true, icon = GlassIcon.Play, onClick = onStart)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExtraShortcut(
+    theme: GlassTheme,
+    title: String,
+    subtitle: String,
+    icon: GlassIcon,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    GlassPanel(theme, modifier, radius = 24.dp) {
+        Row(
+            Modifier
+                .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onClick)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(21.dp))
+                    .background(theme.accent.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                com.thefadghost.glasspuzzlehub.ui.IconCanvas(icon, theme.accent, Modifier.size(22.dp))
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                GlassText(title, theme, size = 18, weight = FontWeight.SemiBold)
+                GlassText(subtitle, theme, size = 12, muted = true)
             }
         }
     }

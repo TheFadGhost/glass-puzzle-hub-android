@@ -107,6 +107,11 @@ object ShikakuValidator {
     }
 }
 
+object ShikakuCompletion {
+    fun isComplete(puzzle: ShikakuPuzzle, rects: List<ShikakuRect>): Boolean =
+        ShikakuValidator.validate(puzzle, rects).isValid
+}
+
 object ShikakuSolver {
     fun countSolutions(puzzle: ShikakuPuzzle, limit: Int = 2): Int {
         val candidates = puzzle.clues.map { clue ->

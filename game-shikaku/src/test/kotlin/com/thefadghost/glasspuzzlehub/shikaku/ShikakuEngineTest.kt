@@ -55,4 +55,12 @@ class ShikakuEngineTest {
         assertEquals(1, solutionCount)
         assertTrue(ShikakuValidator.validate(puzzle, puzzle.solution).isValid)
     }
+
+    @Test
+    fun completionOnlyAcceptsAValidFullBoard() {
+        val puzzle = ShikakuGenerator.generate(seed = 101L, difficulty = Difficulty.Beginner)
+
+        assertTrue(ShikakuCompletion.isComplete(puzzle, puzzle.solution))
+        assertFalse(ShikakuCompletion.isComplete(puzzle, puzzle.solution.dropLast(1)))
+    }
 }

@@ -1,6 +1,6 @@
 # Glass Puzzle Hub
 
-Glass Puzzle Hub is a native Android logic game hub built around custom glass UI and canvas-rendered puzzle boards. V1 includes Shikaku and Sudoku, with shared contracts for more games later.
+Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a glass floating dock, and canvas-rendered puzzle boards. V1 includes Shikaku and Sudoku, with shared contracts for more games later.
 
 ## V1 Games
 
@@ -11,7 +11,9 @@ Glass Puzzle Hub is a native Android logic game hub built around custom glass UI
 
 - Kotlin and Jetpack Compose with custom Canvas rendering.
 - No Material components, platform dialogs, XML layouts, stock Android buttons, or stock in-app navigation.
-- Floating glass dock, custom icon primitives, custom theme tokens, custom boards, and custom settings toggles.
+- Games-first home screen with two primary puzzle options.
+- Floating glass dock, rounded vector icons, custom theme tokens, custom boards, and custom settings toggles.
+- Solid squircle panels for cards, settings, popups, and game surfaces so the glass effect stays restrained.
 - Six themes: Noir Glass, Frost Glass, Aurora Glass, Ember Glass, Mono Ink, and Solar Clean.
 
 ## Architecture
@@ -42,5 +44,6 @@ app/build/outputs/apk/debug/app-debug.apk
 ## Current V1 Limits
 
 - Saves and stats storage schema exists; only theme/settings persistence is wired in the first UI pass.
+- Shikaku has a completion popup when the board validates cleanly; Sudoku completion currently reports through the play message.
 - No Play Store signing or cloud sync.
 - Daily puzzles are generated locally from date-based seeds.

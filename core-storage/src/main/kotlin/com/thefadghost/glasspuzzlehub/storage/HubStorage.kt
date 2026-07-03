@@ -111,7 +111,7 @@ abstract class HubDatabase : RoomDatabase() {
 }
 
 data class HubSettings(
-    val themeId: String = "noir",
+    val themeId: String = "solar",
     val haptics: Boolean = true,
     val sound: Boolean = false,
     val reducedMotion: Boolean = false,
@@ -127,7 +127,7 @@ class SettingsStore(private val context: Context) {
 
     val settings: Flow<HubSettings> = context.settingsDataStore.data.map { prefs ->
         HubSettings(
-            themeId = prefs[themeKey] ?: "noir",
+            themeId = prefs[themeKey] ?: "solar",
             haptics = prefs[hapticsKey] ?: true,
             sound = prefs[soundKey] ?: false,
             reducedMotion = prefs[reducedMotionKey] ?: false,
