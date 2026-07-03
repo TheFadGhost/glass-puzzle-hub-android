@@ -1,3 +1,45 @@
+# Glass Puzzle Hub v2.0.0
+
+Major performance and playability release.
+
+## Added
+
+- High-refresh display preference: the app now requests the highest available Android display mode, including 90Hz/120Hz devices when supported by the OS.
+- Tested high-refresh mode selector in `core-model`.
+- Shikaku modes:
+  - Classic
+  - Mini
+  - Wide
+  - Tall
+  - Large
+  - Shadow Blocks
+- Shadow Blocks Shikaku variant where shaded cells are covered by rectangles but do not count toward clue area.
+- Modes section on game detail screens.
+- Sudoku roadmap modes: Mini, Diagonal, Irregular, and Killer.
+- Next-game recommendation cards for Slitherlink, Nurikabe, and Kakuro.
+- v2 research notes in `research_v2_puzzle_modes/`.
+- v2 spec and implementation plan in `docs/superpowers/`.
+
+## Changed
+
+- Shikaku generator now supports rectangular boards and verifies unique solutions for generated mode boards.
+- Shikaku board rendering and hit testing now support non-square board dimensions.
+- Shikaku drag placement can replace overlapping rectangles, making direction changes practical.
+- App version is now `2.0.0` / versionCode `3`.
+
+## Fixed
+
+- Tapping a value-1 Shikaku clue now places its single-cell rectangle.
+- Long-pressing a placed Shikaku rectangle removes it.
+- Drawing over an existing Shikaku rectangle no longer blocks valid replacement attempts.
+
+## Known Limits
+
+- Android can reject high-refresh requests due to battery saver, display policy, or device support.
+- Sudoku variants beyond Classic are visible roadmap modes, not playable engines yet.
+- Slitherlink, Nurikabe, and Kakuro are planned future games, not playable engines yet.
+- Release APK is debug-signed unless a production signing config is added.
+
 # Glass Puzzle Hub v0.1.1
 
 UX polish and debugging release.

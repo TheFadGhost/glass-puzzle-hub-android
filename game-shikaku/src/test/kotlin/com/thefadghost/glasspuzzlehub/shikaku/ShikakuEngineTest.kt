@@ -63,4 +63,64 @@ class ShikakuEngineTest {
         assertTrue(ShikakuCompletion.isComplete(puzzle, puzzle.solution))
         assertFalse(ShikakuCompletion.isComplete(puzzle, puzzle.solution.dropLast(1)))
     }
+
+    @Test
+    fun generatorSupportsWideAndTallModes() {
+        val wide = ShikakuGenerator.generate(seed = 7L, difficulty = Difficulty.Easy, mode = ShikakuMode.Wide)
+        val tall = ShikakuGenerator.generate(seed = 7L, difficulty = Difficulty.Easy, mode = ShikakuMode.Tall)
+
+        assertTrue(wide.width > wide.height)
+        assertTrue(tall.height > tall.width)
+        assertEquals(1, ShikakuSolver.countSolutions(wide, limit = 2))
+        assertEquals(1, ShikakuSolver.countSolutions(tall, limit = 2))
+    }
+
+    @Test
+    fun blockedCellsDoNotCountTowardClueArea() {
+        val puzzle = ShikakuPuzzle(
+            width = 2,
+            height = 1,
+            clues = listOf(ShikakuClue(ShikakuCell(0, 0), 1)),
+            solution = listOf(ShikakuRect(0, 0, 0, 1)),
+            seed = 1L,
+            difficulty = Difficulty.Beginner,
+            blockedCells = listOf(ShikakuCell(0, 1)),
+            mode = ShikakuMode.ShadowBlocks,
+        )
+
+        assertTrue(ShikakuValidator.validate(puzzle, puzzle.solution).isValid)
+    }
+
+    @Test
+    fun tapOnSingleValueClueCreatesSingleCellRectangle() {
+        val puzzle = ShikakuPuzzle(
+            width = 1,
+            height = 1,
+            clues = listOf(ShikakuClue(ShikakuCell(0, 0), 1)),
+            solution = listOf(ShikakuRect(0, 0, 0, 0)),
+            seed = 1L,
+            difficulty = Difficulty.Beginner,
+        )
+
+        assertEquals(ShikakuRect(0, 0, 0, 0), ShikakuInteractions.singleCellRectForTap(puzzle, ShikakuCell(0, 0)))
+    }
+
+    @Test
+    fun removesRectangleContainingCell() {
+        val rects = listOf(ShikakuRect(0, 0, 0, 1), ShikakuRect(1, 0, 1, 1))
+
+        val next = ShikakuInteractions.removeRectAt(rects, ShikakuCell(0, 1))
+
+        assertEquals(listOf(ShikakuRect(1, 0, 1, 1)), next)
+    }
+
+    @Test
+    fun replacementRemovesOverlappingRectanglesBeforeAddingCandidate() {
+        val rects = listOf(ShikakuRect(0, 0, 0, 2), ShikakuRect(1, 0, 1, 2))
+        val candidate = ShikakuRect(0, 1, 1, 2)
+
+        val next = ShikakuInteractions.replaceOverlapping(rects, candidate)
+
+        assertEquals(listOf(candidate), next)
+    }
 }

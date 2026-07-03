@@ -6,6 +6,16 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 @Serializable
+enum class ShikakuMode(val label: String, val summary: String) {
+    Classic("Classic", "Balanced square boards."),
+    Mini("Mini", "Smaller fast boards for quick solves."),
+    Wide("Wide", "Horizontal boards that change rectangle scanning."),
+    Tall("Tall", "Vertical boards for different drag rhythm."),
+    Large("Large", "Bigger boards with more regions."),
+    ShadowBlocks("Shadow Blocks", "Shaded cells are covered but do not count toward clue area."),
+}
+
+@Serializable
 data class ShikakuCell(val row: Int, val col: Int)
 
 @Serializable
@@ -53,8 +63,17 @@ data class ShikakuPuzzle(
     val solution: List<ShikakuRect>,
     val seed: Long,
     val difficulty: Difficulty,
+    val blockedCells: List<ShikakuCell> = emptyList(),
+    val mode: ShikakuMode = ShikakuMode.Classic,
 ) {
-    val puzzleId: String = "shikaku-$seed-${difficulty.name.lowercase()}"
+    val puzzleId: String = "shikaku-$seed-${difficulty.name.lowercase()}-${mode.name.lowercase()}"
+
+    private val blockedSet: Set<ShikakuCell> = blockedCells.toSet()
+
+    fun isBlocked(cell: ShikakuCell): Boolean = cell in blockedSet
+
+    fun effectiveArea(rect: ShikakuRect): Int =
+        rect.cells().count { it !in blockedSet }
 }
 
 @Serializable
@@ -83,7 +102,7 @@ object ShikakuValidator {
             if (cluesInside.size != 1) {
                 return ShikakuValidation(false, "Each rectangle must contain exactly one clue.")
             }
-            if (cluesInside.single().value != rect.area) {
+            if (cluesInside.single().value != puzzle.effectiveArea(rect)) {
                 return ShikakuValidation(false, "Rectangle area does not match its clue.")
             }
 
@@ -110,6 +129,21 @@ object ShikakuValidator {
 object ShikakuCompletion {
     fun isComplete(puzzle: ShikakuPuzzle, rects: List<ShikakuRect>): Boolean =
         ShikakuValidator.validate(puzzle, rects).isValid
+}
+
+object ShikakuInteractions {
+    fun singleCellRectForTap(puzzle: ShikakuPuzzle, cell: ShikakuCell): ShikakuRect? {
+        val clue = puzzle.clues.firstOrNull { it.cell == cell } ?: return null
+        if (puzzle.isBlocked(cell)) return null
+        val rect = ShikakuRect(cell.row, cell.col, cell.row, cell.col)
+        return if (clue.value == puzzle.effectiveArea(rect)) rect else null
+    }
+
+    fun removeRectAt(rects: List<ShikakuRect>, cell: ShikakuCell): List<ShikakuRect> =
+        rects.filterNot { it.contains(cell) }
+
+    fun replaceOverlapping(rects: List<ShikakuRect>, candidate: ShikakuRect): List<ShikakuRect> =
+        rects.filterNot { it.overlaps(candidate) } + candidate
 }
 
 object ShikakuSolver {
@@ -165,16 +199,13 @@ object ShikakuSolver {
 
     private fun generateCandidates(puzzle: ShikakuPuzzle, clue: ShikakuClue): List<ShikakuRect> {
         val result = mutableListOf<ShikakuRect>()
-        for (height in 1..clue.value) {
-            if (clue.value % height != 0) continue
-            val width = clue.value / height
-            for (top in (clue.cell.row - height + 1)..clue.cell.row) {
-                val bottom = top + height - 1
-                if (top < 0 || bottom >= puzzle.height) continue
-                for (left in (clue.cell.col - width + 1)..clue.cell.col) {
-                    val right = left + width - 1
-                    if (left < 0 || right >= puzzle.width) continue
-                    result += ShikakuRect(top, left, bottom, right)
+        for (top in 0..clue.cell.row) {
+            for (bottom in clue.cell.row until puzzle.height) {
+                for (left in 0..clue.cell.col) {
+                    for (right in clue.cell.col until puzzle.width) {
+                        val rect = ShikakuRect(top, left, bottom, right)
+                        if (puzzle.effectiveArea(rect) == clue.value) result += rect
+                    }
                 }
             }
         }
@@ -193,8 +224,76 @@ object ShikakuSolver {
 }
 
 object ShikakuGenerator {
-    fun generate(seed: Long, difficulty: Difficulty): ShikakuPuzzle {
-        val size = when (difficulty) {
+    fun generate(seed: Long, difficulty: Difficulty, mode: ShikakuMode = ShikakuMode.Classic): ShikakuPuzzle {
+        val (width, height) = dimensionsFor(difficulty, mode)
+        return generate(seed, difficulty, width, height, mode)
+    }
+
+    fun generate(
+        seed: Long,
+        difficulty: Difficulty,
+        width: Int,
+        height: Int,
+        mode: ShikakuMode = ShikakuMode.Classic,
+    ): ShikakuPuzzle {
+        repeat(80) { attempt ->
+            val puzzle = generateOnce(seed + attempt * 9973L, difficulty, width, height, mode)
+            if (ShikakuSolver.countSolutions(puzzle, limit = 2) == 1) return puzzle
+        }
+        return generateOnce(seed, difficulty, width, height, mode)
+    }
+
+    private fun generateOnce(
+        seed: Long,
+        difficulty: Difficulty,
+        width: Int,
+        height: Int,
+        mode: ShikakuMode,
+    ): ShikakuPuzzle {
+        val random = Random(seed)
+        val solution = mutableListOf<ShikakuRect>()
+        val consumed = Array(height) { BooleanArray(width) }
+
+        for (row in 0 until height) {
+            var col = 0
+            while (col < width) {
+                if (consumed[row][col]) {
+                    col++
+                    continue
+                }
+                val maxWidth = (1..3).takeWhile { col + it <= width && (0 until it).all { offset -> !consumed[row][col + offset] } }
+                    .lastOrNull() ?: 1
+                val runWidth = if (maxWidth == 1 || random.nextInt(100) < 45) 1 else random.nextInt(2, maxWidth + 1)
+                val rect = ShikakuRect(row, col, row, col + runWidth - 1)
+                solution += rect
+                rect.cells().forEach { consumed[it.row][it.col] = true }
+                col += runWidth
+            }
+        }
+
+        val adjusted = mergeSomeVerticalStrips(solution, width, height, random)
+        val blockedCells = if (mode == ShikakuMode.ShadowBlocks) createBlockedCells(adjusted, random) else emptyList()
+        val blockedSet = blockedCells.toSet()
+        val clues = adjusted.map { rect ->
+            val availableCells = rect.cells().filter { it !in blockedSet }.toList()
+            val clueCell = availableCells[random.nextInt(availableCells.size)]
+            ShikakuClue(clueCell, availableCells.size)
+        }
+
+        return ShikakuPuzzle(
+            width = width,
+            height = height,
+            clues = clues,
+            solution = adjusted,
+            seed = abs(seed),
+            difficulty = difficulty,
+            blockedCells = blockedCells,
+            mode = mode,
+        )
+    }
+
+    private fun dimensionsFor(difficulty: Difficulty, mode: ShikakuMode): Pair<Int, Int> {
+        val base = when (difficulty) {
             Difficulty.Beginner -> 5
             Difficulty.Easy -> 6
             Difficulty.Medium -> 7
@@ -202,57 +301,40 @@ object ShikakuGenerator {
             Difficulty.Expert -> 9
             Difficulty.Master -> 10
         }
-        val random = Random(seed)
-        val solution = mutableListOf<ShikakuRect>()
-        val consumed = Array(size) { BooleanArray(size) }
+        return when (mode) {
+            ShikakuMode.Classic -> base to base
+            ShikakuMode.Mini -> (base - 1).coerceAtLeast(4) to (base - 1).coerceAtLeast(4)
+            ShikakuMode.Wide -> base + 3 to base
+            ShikakuMode.Tall -> base to base + 3
+            ShikakuMode.Large -> base + 2 to base + 2
+            ShikakuMode.ShadowBlocks -> base to base
+        }
+    }
 
-        for (row in 0 until size) {
-            var col = 0
-            while (col < size) {
-                if (consumed[row][col]) {
-                    col++
-                    continue
-                }
-                val maxWidth = (1..3).takeWhile { col + it <= size && (0 until it).all { offset -> !consumed[row][col + offset] } }
-                    .lastOrNull() ?: 1
-                val width = if (maxWidth == 1 || random.nextInt(100) < 45) 1 else random.nextInt(2, maxWidth + 1)
-                val rect = ShikakuRect(row, col, row, col + width - 1)
-                solution += rect
-                rect.cells().forEach { consumed[it.row][it.col] = true }
-                col += width
+    private fun createBlockedCells(rects: List<ShikakuRect>, random: Random): List<ShikakuCell> =
+        rects.mapNotNull { rect ->
+            val cells = rect.cells().toList()
+            if (cells.size <= 1 || random.nextInt(100) >= 24) {
+                null
+            } else {
+                cells[random.nextInt(cells.size)]
             }
         }
 
-        val adjusted = mergeSomeVerticalStrips(solution, size, random)
-        val clues = adjusted.map { rect ->
-            val clueRow = if (random.nextBoolean()) rect.top else rect.bottom
-            val clueCol = if (random.nextBoolean()) rect.left else rect.right
-            ShikakuClue(ShikakuCell(clueRow, clueCol), rect.area)
-        }
-
-        return ShikakuPuzzle(
-            width = size,
-            height = size,
-            clues = clues,
-            solution = adjusted,
-            seed = abs(seed),
-            difficulty = difficulty,
-        )
-    }
-
     private fun mergeSomeVerticalStrips(
         initial: List<ShikakuRect>,
-        size: Int,
+        width: Int,
+        height: Int,
         random: Random,
     ): List<ShikakuRect> {
         val remaining = initial.toMutableList()
         val result = mutableListOf<ShikakuRect>()
         val byCell = remaining.associateBy { it.top to it.left }.toMutableMap()
 
-        for (row in 0 until size) {
-            for (col in 0 until size) {
+        for (row in 0 until height) {
+            for (col in 0 until width) {
                 val rect = byCell.remove(row to col) ?: continue
-                if (rect.width == 1 && row + 1 < size && random.nextInt(100) < 18) {
+                if (rect.width == 1 && row + 1 < height && random.nextInt(100) < 18) {
                     val below = byCell[row + 1 to col]
                     if (below != null && below.width == 1) {
                         byCell.remove(row + 1 to col)

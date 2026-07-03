@@ -3,7 +3,9 @@ package com.thefadghost.glasspuzzlehub
 import android.app.Activity
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
@@ -78,10 +80,14 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thefadghost.glasspuzzlehub.model.Difficulty
+import com.thefadghost.glasspuzzlehub.model.DisplayModeCandidate
 import com.thefadghost.glasspuzzlehub.model.GameId
+import com.thefadghost.glasspuzzlehub.model.HighRefreshSelector
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuCell
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuCompletion
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuGenerator
+import com.thefadghost.glasspuzzlehub.shikaku.ShikakuInteractions
+import com.thefadghost.glasspuzzlehub.shikaku.ShikakuMode
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuPuzzle
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuRect
 import com.thefadghost.glasspuzzlehub.shikaku.ShikakuValidator
@@ -110,11 +116,45 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        preferHighRefreshRate()
         setContent { GlassPuzzleHubApp() }
     }
 }
 
+private fun Activity.preferHighRefreshRate() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+    val activeDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        display
+    } else {
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay
+    } ?: return
+    val selected = HighRefreshSelector.bestMode(
+        activeDisplay.supportedModes.map { mode ->
+            DisplayModeCandidate(
+                id = mode.modeId,
+                refreshRate = mode.refreshRate,
+                width = mode.physicalWidth,
+                height = mode.physicalHeight,
+            )
+        },
+    ) ?: return
+    val attributes = window.attributes
+    attributes.preferredDisplayModeId = selected.id
+    attributes.preferredRefreshRate = selected.refreshRate
+    window.attributes = attributes
+    Log.i("GlassPuzzleHub", "Preferred display mode ${selected.id} at ${selected.refreshRate}Hz")
+}
+
 private enum class Screen { Home, Games, Daily, Archive, Stats, Themes, Settings, Detail, Play }
+
+private enum class SudokuMode(val label: String, val summary: String, val playable: Boolean) {
+    Classic("Classic", "Standard 9x9 rules.", true),
+    Mini("Mini", "4x4 and 6x6 boards.", false),
+    Diagonal("Diagonal", "Main diagonals also contain every digit.", false),
+    Irregular("Irregular", "Jigsaw-shaped boxes replace 3x3 boxes.", false),
+    Killer("Killer", "Cages add sum constraints.", false),
+}
 
 @Composable
 private fun GlassPuzzleHubApp() {
@@ -126,6 +166,8 @@ private fun GlassPuzzleHubApp() {
     var screen by remember { mutableStateOf(Screen.Games) }
     var activeGame by remember { mutableStateOf(GameId.Shikaku) }
     var difficulty by remember { mutableStateOf(Difficulty.Easy) }
+    var shikakuMode by remember { mutableStateOf(ShikakuMode.Classic) }
+    var sudokuMode by remember { mutableStateOf(SudokuMode.Classic) }
     var shikakuPuzzle by remember { mutableStateOf(sampleShikakuPuzzle()) }
     var sudokuPuzzle by remember { mutableStateOf(sampleSudokuPuzzle()) }
     val shikakuRects = remember { mutableStateListOf<ShikakuRect>() }
@@ -139,14 +181,15 @@ private fun GlassPuzzleHubApp() {
         difficulty = nextDifficulty
         val seedBase = if (daily) LocalDate.now().toEpochDay() else System.currentTimeMillis() / 1000L
         if (game == GameId.Shikaku) {
-            shikakuPuzzle = ShikakuGenerator.generate(seedBase + nextDifficulty.ordinal * 41, nextDifficulty)
+            shikakuPuzzle = ShikakuGenerator.generate(seedBase + nextDifficulty.ordinal * 41 + shikakuMode.ordinal * 131, nextDifficulty, shikakuMode)
             shikakuRects.clear()
         } else {
-            sudokuPuzzle = SudokuGenerator.generate(seedBase + nextDifficulty.ordinal * 71, nextDifficulty)
+            sudokuPuzzle = SudokuGenerator.generate(seedBase + nextDifficulty.ordinal * 71 + sudokuMode.ordinal * 151, nextDifficulty)
             sudokuGrid = sudokuPuzzle.givens
             sudokuSelected = null
         }
-        message = if (daily) "Daily ${game.displayName} is ready." else "${game.displayName} ${nextDifficulty.label} started."
+        val modeLabel = if (game == GameId.Shikaku) shikakuMode.label else sudokuMode.label
+        message = if (daily) "Daily ${game.displayName} / $modeLabel is ready." else "${game.displayName} ${nextDifficulty.label} / $modeLabel started."
         screen = Screen.Play
     }
 
@@ -176,7 +219,19 @@ private fun GlassPuzzleHubApp() {
                     Screen.Stats -> StatsScreen(theme, shikakuSolved = shikakuRects.size, sudokuFilled = sudokuGrid.values.count { it != 0 })
                     Screen.Themes -> ThemesScreen(theme, onTheme = { next -> scope.launch { settingsStore.setTheme(next.id) } })
                     Screen.Settings -> SettingsScreen(theme, settings, onToggle = { key, value -> scope.launch { settingsStore.setBoolean(key, value) } })
-                    Screen.Detail -> GameDetailScreen(theme, activeGame, difficulty, onDifficulty = { difficulty = it }, onBack = { screen = Screen.Games }, onStart = { startGame(activeGame, difficulty) }, onDaily = { startGame(activeGame, difficulty, daily = true) })
+                    Screen.Detail -> GameDetailScreen(
+                        theme = theme,
+                        game = activeGame,
+                        difficulty = difficulty,
+                        shikakuMode = shikakuMode,
+                        sudokuMode = sudokuMode,
+                        onDifficulty = { difficulty = it },
+                        onShikakuMode = { shikakuMode = it },
+                        onSudokuMode = { sudokuMode = it },
+                        onBack = { screen = Screen.Games },
+                        onStart = { startGame(activeGame, difficulty) },
+                        onDaily = { startGame(activeGame, difficulty, daily = true) },
+                    )
                     Screen.Play -> GamePlayScreen(
                         theme = theme,
                         game = activeGame,
@@ -282,6 +337,10 @@ private fun GamesScreen(
             ExtraShortcut(theme, "Themes", "Color sets", GlassIcon.Palette, Modifier.weight(1f), onThemes)
         }
         ExtraShortcut(theme, "Settings", "Motion, haptics, contrast, sound", GlassIcon.Settings, Modifier.fillMaxWidth(), onSettings)
+        GlassText("Next games", theme, size = 14, weight = FontWeight.SemiBold, muted = true)
+        RecommendedGameCard(theme, "Slitherlink", "Draw one continuous loop around numbered cells.", "Modes planned: classic, no-3, large loops")
+        RecommendedGameCard(theme, "Nurikabe", "Shade a connected wall while preserving numbered islands.", "Modes planned: classic, tiny islands, expert wall")
+        RecommendedGameCard(theme, "Kakuro", "Fill sum runs with digits 1-9 without repeats.", "Modes planned: mini sums, classic, large grids")
         Spacer(Modifier.height(92.dp))
     }
 }
@@ -315,7 +374,11 @@ private fun GameDetailScreen(
     theme: GlassTheme,
     game: GameId,
     difficulty: Difficulty,
+    shikakuMode: ShikakuMode,
+    sudokuMode: SudokuMode,
     onDifficulty: (Difficulty) -> Unit,
+    onShikakuMode: (ShikakuMode) -> Unit,
+    onSudokuMode: (SudokuMode) -> Unit,
     onBack: () -> Unit,
     onStart: () -> Unit,
     onDaily: () -> Unit,
@@ -334,6 +397,36 @@ private fun GameDetailScreen(
                     items(levels.size) { index ->
                         val item = levels[index]
                         ActionChip(item.label, theme, selected = item == difficulty) { onDifficulty(item) }
+                    }
+                }
+                GlassText("Modes", theme, size = 16, weight = FontWeight.SemiBold, muted = true)
+                if (game == GameId.Shikaku) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val modes = ShikakuMode.values().toList()
+                        items(modes.size) { index ->
+                            val mode = modes[index]
+                            ModeChip(
+                                label = mode.label,
+                                summary = mode.summary,
+                                theme = theme,
+                                selected = mode == shikakuMode,
+                                enabled = true,
+                            ) { onShikakuMode(mode) }
+                        }
+                    }
+                } else {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val modes = SudokuMode.values().toList()
+                        items(modes.size) { index ->
+                            val mode = modes[index]
+                            ModeChip(
+                                label = mode.label,
+                                summary = if (mode.playable) mode.summary else "${mode.summary} Planned engine.",
+                                theme = theme,
+                                selected = mode == sudokuMode,
+                                enabled = mode.playable,
+                            ) { onSudokuMode(mode) }
+                        }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -554,9 +647,31 @@ private fun ShikakuBoard(
     Canvas(
         Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(puzzle.width.toFloat() / puzzle.height.toFloat())
             .semantics { contentDescription = "Shikaku board" }
             .onSizeChanged { boardSize = it }
+            .pointerInput(puzzle, rects) {
+                detectTapGestures(
+                    onTap = { offset ->
+                        val cell = cellAt(offset, boardSize, puzzle.width, puzzle.height) ?: return@detectTapGestures
+                        val single = ShikakuInteractions.singleCellRectForTap(puzzle, cell)
+                        if (single != null) {
+                            onRects(ShikakuInteractions.replaceOverlapping(rects, single))
+                            onMessage("Single-cell clue placed.")
+                        } else {
+                            onMessage("Drag from a clue to draw a rectangle.")
+                        }
+                    },
+                    onLongPress = { offset ->
+                        val cell = cellAt(offset, boardSize, puzzle.width, puzzle.height) ?: return@detectTapGestures
+                        val next = ShikakuInteractions.removeRectAt(rects, cell)
+                        if (next.size != rects.size) {
+                            onRects(next)
+                            onMessage("Rectangle removed.")
+                        }
+                    },
+                )
+            }
             .pointerInput(puzzle, rects) {
                 detectDragGestures(
                     onDragStart = { offset ->
@@ -571,12 +686,13 @@ private fun ShikakuBoard(
                     onDragEnd = {
                         val candidate = preview
                         if (candidate != null) {
-                            val overlaps = rects.any { it.overlaps(candidate) }
                             val cluesInside = puzzle.clues.count { candidate.contains(it.cell) }
-                            if (!overlaps && cluesInside <= 1) {
-                                onRects(rects + candidate)
+                            if (cluesInside <= 1) {
+                                val next = ShikakuInteractions.replaceOverlapping(rects, candidate)
+                                onRects(next)
+                                onMessage(if (next.size <= rects.size) "Rectangle replaced." else "Rectangle placed.")
                             } else {
-                                onMessage("That rectangle overlaps or captures too many clues.")
+                                onMessage("That rectangle captures too many clues.")
                             }
                         }
                         start = null
@@ -585,34 +701,44 @@ private fun ShikakuBoard(
                 )
             },
     ) {
-        val cell = size.minDimension / puzzle.width
-        drawRoundRect(theme.panelStrong, size = Size(cell * puzzle.width, cell * puzzle.height), cornerRadius = CornerRadius(24f, 24f))
+        val cell = min(size.width / puzzle.width, size.height / puzzle.height)
+        val left = (size.width - cell * puzzle.width) / 2f
+        val top = (size.height - cell * puzzle.height) / 2f
+        drawRoundRect(theme.panelStrong, topLeft = Offset(left, top), size = Size(cell * puzzle.width, cell * puzzle.height), cornerRadius = CornerRadius(24f, 24f))
         for (row in 0 until puzzle.height) {
             for (col in 0 until puzzle.width) {
                 drawRoundRect(
                     color = theme.background.copy(alpha = 0.42f),
-                    topLeft = Offset(col * cell + 3f, row * cell + 3f),
+                    topLeft = Offset(left + col * cell + 3f, top + row * cell + 3f),
                     size = Size(cell - 6f, cell - 6f),
                     cornerRadius = CornerRadius(12f, 12f),
                 )
             }
         }
+        puzzle.blockedCells.forEach { blocked ->
+            drawRoundRect(
+                color = theme.text.copy(alpha = 0.14f),
+                topLeft = Offset(left + blocked.col * cell + 8f, top + blocked.row * cell + 8f),
+                size = Size(cell - 16f, cell - 16f),
+                cornerRadius = CornerRadius(10f, 10f),
+            )
+        }
         rects.forEachIndexed { index, rect ->
             val fill = if (index % 2 == 0) theme.accent.copy(alpha = 0.42f) else theme.accentAlt.copy(alpha = 0.38f)
-            drawRoundRect(fill, Offset(rect.left * cell + 4f, rect.top * cell + 4f), Size(rect.width * cell - 8f, rect.height * cell - 8f), CornerRadius(16f, 16f))
-            drawRoundRect(theme.text.copy(alpha = 0.55f), Offset(rect.left * cell + 4f, rect.top * cell + 4f), Size(rect.width * cell - 8f, rect.height * cell - 8f), CornerRadius(16f, 16f), style = Stroke(2.2f))
+            drawRoundRect(fill, Offset(left + rect.left * cell + 4f, top + rect.top * cell + 4f), Size(rect.width * cell - 8f, rect.height * cell - 8f), CornerRadius(16f, 16f))
+            drawRoundRect(theme.text.copy(alpha = 0.55f), Offset(left + rect.left * cell + 4f, top + rect.top * cell + 4f), Size(rect.width * cell - 8f, rect.height * cell - 8f), CornerRadius(16f, 16f), style = Stroke(2.2f))
         }
         preview?.let { rect ->
-            val valid = !rects.any { it.overlaps(rect) } && puzzle.clues.count { rect.contains(it.cell) } <= 1
+            val valid = puzzle.clues.count { rect.contains(it.cell) } <= 1
             drawRoundRect(
                 if (valid) theme.success.copy(alpha = 0.30f) else theme.danger.copy(alpha = 0.35f),
-                Offset(rect.left * cell + 4f, rect.top * cell + 4f),
+                Offset(left + rect.left * cell + 4f, top + rect.top * cell + 4f),
                 Size(rect.width * cell - 8f, rect.height * cell - 8f),
                 CornerRadius(16f, 16f),
             )
             drawRoundRect(
                 if (valid) theme.success else theme.danger,
-                Offset(rect.left * cell + 4f, rect.top * cell + 4f),
+                Offset(left + rect.left * cell + 4f, top + rect.top * cell + 4f),
                 Size(rect.width * cell - 8f, rect.height * cell - 8f),
                 CornerRadius(16f, 16f),
                 style = Stroke(3f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))),
@@ -626,7 +752,7 @@ private fun ShikakuBoard(
         }
         puzzle.clues.forEach {
             paint.color = theme.text.toArgbInt()
-            drawContext.canvas.nativeCanvas.drawText(it.value.toString(), (it.cell.col + 0.5f) * cell, (it.cell.row + 0.62f) * cell, paint)
+            drawContext.canvas.nativeCanvas.drawText(it.value.toString(), left + (it.cell.col + 0.5f) * cell, top + (it.cell.row + 0.62f) * cell, paint)
         }
     }
 }
@@ -927,6 +1053,65 @@ private fun ExtraShortcut(
 }
 
 @Composable
+private fun ModeChip(
+    label: String,
+    summary: String,
+    theme: GlassTheme,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    GlassPanel(theme, Modifier.width(220.dp), radius = 22.dp) {
+        Column(
+            Modifier
+                .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    Modifier
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                selected -> theme.accent
+                                enabled -> theme.accentAlt.copy(alpha = 0.62f)
+                                else -> theme.mutedText.copy(alpha = 0.34f)
+                            },
+                        ),
+                )
+                GlassText(label, theme, size = 17, weight = FontWeight.Bold, muted = !enabled)
+            }
+            GlassText(summary, theme, size = 12, muted = true)
+        }
+    }
+}
+
+@Composable
+private fun RecommendedGameCard(theme: GlassTheme, title: String, body: String, modes: String) {
+    GlassPanel(theme, Modifier.fillMaxWidth(), radius = 24.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(theme.accentAlt.copy(alpha = 0.18f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    com.thefadghost.glasspuzzlehub.ui.IconCanvas(GlassIcon.Grid, theme.accentAlt, Modifier.size(20.dp))
+                }
+                GlassText(title, theme, size = 20, weight = FontWeight.Bold)
+            }
+            GlassText(body, theme, muted = true)
+            GlassText(modes, theme, size = 12, muted = true, mono = true)
+        }
+    }
+}
+
+@Composable
 private fun GameWideRow(theme: GlassTheme, game: GameId, body: String, onOpen: (GameId) -> Unit) {
     GlassPanel(theme, Modifier.fillMaxWidth()) {
         Row(
@@ -1039,11 +1224,11 @@ private fun CustomToggle(theme: GlassTheme, enabled: Boolean) {
 
 private fun cellAt(offset: Offset, size: IntSize, width: Int, height: Int): ShikakuCell? {
     if (size.width == 0 || size.height == 0) return null
-    val board = min(size.width, size.height).toFloat()
-    val cellW = board / width
-    val cellH = board / height
-    val col = floor(offset.x / cellW).toInt()
-    val row = floor(offset.y / cellH).toInt()
+    val cell = min(size.width.toFloat() / width, size.height.toFloat() / height)
+    val left = (size.width - cell * width) / 2f
+    val top = (size.height - cell * height) / 2f
+    val col = floor((offset.x - left) / cell).toInt()
+    val row = floor((offset.y - top) / cell).toInt()
     return if (row in 0 until height && col in 0 until width) ShikakuCell(row, col) else null
 }
 

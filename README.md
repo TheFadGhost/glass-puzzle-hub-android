@@ -1,6 +1,6 @@
 # Glass Puzzle Hub
 
-Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a glass floating dock, and canvas-rendered puzzle boards. V1 includes Shikaku and Sudoku, with shared contracts for more games later.
+Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a glass floating dock, and canvas-rendered puzzle boards. V2 includes Shikaku and Sudoku, with shared contracts and visible roadmap cards for more puzzle games later.
 
 ## V1 Games
 
@@ -14,6 +14,10 @@ Glass Puzzle Hub is a native Android logic game hub with a clean custom UI, a gl
 - Games-first home screen with two primary puzzle options.
 - Floating glass dock, rounded vector icons, custom theme tokens, custom boards, and custom settings toggles.
 - Solid squircle panels for cards, settings, popups, and game surfaces so the glass effect stays restrained.
+- High-refresh display preference for devices that expose 90Hz/120Hz modes.
+- Shikaku modes: Classic, Mini, Wide, Tall, Large, and Shadow Blocks.
+- Sudoku modes: Classic playable, with Mini, Diagonal, Irregular, and Killer staged as planned engines.
+- Next-game roadmap cards for Slitherlink, Nurikabe, and Kakuro.
 - Six themes: Noir Glass, Frost Glass, Aurora Glass, Ember Glass, Mono Ink, and Solar Clean.
 
 ## Architecture
@@ -45,5 +49,6 @@ app/build/outputs/apk/debug/app-debug.apk
 
 - Saves and stats storage schema exists; only theme/settings persistence is wired in the first UI pass.
 - Shikaku has a completion popup when the board validates cleanly; Sudoku completion currently reports through the play message.
+- Slitherlink, Nurikabe, and Kakuro are roadmap cards in v2, not playable engines yet.
 - No Play Store signing or cloud sync.
 - Daily puzzles are generated locally from date-based seeds.
